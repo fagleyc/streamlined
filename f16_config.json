@@ -1,0 +1,28 @@
+{
+  "version": "1.0",
+  "calibration": {
+    "balance_file": "CalFiles/2025_06_06_2 100 lb.vol",
+    "pressure_file": "CalFiles/PRESSLOPvxi18.PCF",
+    "cal_type": "Cubic"
+  },
+  "geometry": {
+    "mac": 2.86,
+    "ref_area": 18.75,
+    "mrc": [
+      1.6,
+      0.0,
+      0.0
+    ],
+    "units": "IPS"
+  },
+  "facility": {
+    "name": "SWT",
+    "balance_config": "Force",
+    "pdiff_channel": "220",
+    "p0_channel": "690"
+  },
+  "directories": {
+    "last_data": "Run01",
+    "last_calibration": "CalFiles"
+  }
+}
