@@ -1,0 +1,196 @@
+Pressure Calibration 1.0
+Date --> Last Modification was on the 06. of Jan. 2017
+Comment --> Pressure Calibration Slopes
+
+[b9336_diff]
+Comment                 --> scanivalve 1psi transducer
+Date                    --> 1999
+Slope for Vlt greater 0 --> 3.529745
+Slope for Vlt smaller 0 --> 3.529745
+Exct. Voltage           --> In Column
+Unit of Slope           --> [psid / Volt/VoltExct]
+
+[b9226_diff]
+Comment                 --> scanivalve 5psi transducer
+Date                    --> 1999
+Slope for Vlt greater 0 --> -10.48351
+Slope for Vlt smaller 0 --> -10.48351
+Exct. Voltage           --> In Column
+Unit of Slope           --> [psid / Volt/VoltExct]
+
+[SDX01D4]
+Comment                 --> pBase1 at the Trisonic Tunnel
+Date                    --> 1999
+Slope for Vlt greater 0 --> .3399851
+Slope for Vlt smaller 0 --> .3399851
+Exct. Voltage           --> In Column
+Unit of Slope           --> [psia / Volt/VoltExct]
+
+[Omega]
+Comment                 --> loadcell
+Date                    --> 2011
+Slope for Vlt greater 0 --> -28495
+Slope for Vlt smaller 0 --> -28495
+Exct. Voltage           --> In Column
+Unit of Slope           --> [lbs / Volt/VoltExct]
+
+[D47975]
+Comment                 --> 25Lb load cell Subsonic Tunnel
+Date                    --> 2000
+Slope for Vlt greater 0 --> 83.786
+Slope for Vlt smaller 0 --> 83.786
+Exct. Voltage           --> In Column
+Unit of Slope           --> [psia / Volt]
+
+[220]
+Comment                 --> pDiff at the Subsonic Tunnel thru the VXI
+Date                    --> 2020
+Slope for Vlt greater 0 --> .386949
+Slope for Vlt smaller 0 --> .386949
+Exct. Voltage           --> 1
+Unit of Slope           --> [psia / Volt/VoltExct]
+
+[690]
+Comment                 --> p0Stil at the Subsonic Tunnel
+Date                    --> 2020
+Slope for Vlt greater 0 --> 1.92604
+Slope for Vlt smaller 0 --> 1.92604
+Exct. Voltage           --> 1
+Unit of Slope           --> [psia / Volt]
+
+[SSM-250]
+Comment                 --> Load Cell at the Subsonic Tunnel
+Date                    --> 2000
+Slope for Vlt greater 0 --> 747.67
+Slope for Vlt smaller 0 --> 747.67
+Exct. Voltage           --> In Column
+Unit of Slope           --> [lbs / Volt/VoltExct]
+
+[2933]
+Comment                 --> pDiff at the Subsonic Tunnel
+Date                    --> 2000
+Slope for Vlt greater 0 --> 72.29898
+Slope for Vlt smaller 0 --> 72.29898
+Exct. Voltage           --> In Column
+Unit of Slope           --> [psia / Volt/VoltExct]
+
+[B9336]
+Comment                 --> Scani 1 psid at the Subsonic Tunnel
+Date                    --> 2016
+Slope for Vlt greater 0 --> 703.7545
+Slope for Vlt smaller 0 --> 703.7545
+Exct. Voltage           --> In Column
+Unit of Slope           --> [psia / Volt/VoltExct]
+
+[102]
+Comment                 --> p0Stil at the Subsonic Tunnel
+Date                    --> 2001
+Slope for Vlt greater 0 --> 3.845
+Slope for Vlt smaller 0 --> 3.845
+Exct. Voltage           --> In Column
+Unit of Slope           --> [psia / Volt]
+
+
+[aft_N]
+Comment                 --> Load Cell at the Subsonic Tunnel
+Date                    --> 2016
+Slope for Vlt greater 0 --> 388.7688
+Slope for Vlt smaller 0 --> 388.7688
+Exct. Voltage           --> In Column
+Unit of Slope           --> [lbs / Volt/VoltExct]
+
+[For_N]
+Comment                 --> Load Cell at the Subsonic Tunnel
+Date                    --> 2016
+Slope for Vlt greater 0 --> 395.439
+Slope for Vlt smaller 0 --> 395.439
+Exct. Voltage           --> In Column
+Unit of Slope           --> [lbs / Volt/VoltExct]
+
+[For_Yaw]
+Comment                 --> Load Cell at the Subsonic Tunnel
+Date                    --> 2016
+Slope for Vlt greater 0 --> 338.3
+Slope for Vlt smaller 0 --> 385.3277
+Exct. Voltage           --> In Column
+Unit of Slope           --> [lbs / Volt/VoltExct]
+
+[Aft_Yaw]
+Comment                 --> Load Cell at the Subsonic Tunnel
+Date                    --> 2016
+Slope for Vlt greater 0 --> 405.408
+Slope for Vlt smaller 0 --> 287.4272
+Exct. Voltage           --> In Column
+Unit of Slope           --> [lbs / Volt/VoltExct]
+
+[Drag]
+Comment                 --> Load Cell at the Subsonic Tunnel
+Date                    --> 2016
+Slope for Vlt greater 0 --> 394.271
+Slope for Vlt smaller 0 --> 394.271
+Exct. Voltage           --> In Column
+Unit of Slope           --> [lbs / Volt/VoltExct]
+
+[2psid]
+Comment                 --> Load Cell at the Subsonic Tunnel
+Date                    --> 1999
+Slope for Vlt greater 0 --> 119.1
+Slope for Vlt smaller 0 --> 119.1
+Exct. Voltage           --> In Column
+Unit of Slope           --> [lbs / Volt/VoltExct]
+
+[25_7]
+Comment                 --> Load Cell at the Subsonic Tunnel
+Date                    --> 2002
+Slope for Vlt greater 0 --> -84.41724
+Slope for Vlt smaller 0 --> -84.41724
+Exct. Voltage           --> In Column
+Unit of Slope           --> [lbs / Volt/VoltExct]
+
+[5lbs load cell]
+Comment                 --> Load Cell at the Subsonic Tunnel
+Date                    --> 2006
+Slope for Vlt greater 0 --> 2622.846	
+Slope for Vlt smaller 0 --> 2622.846
+Exct. Voltage           --> In Column
+Unit of Slope           --> [lbs / Volt/VoltExct]
+
+[1_diff]
+Comment                 --> Load Cell at the Subsonic Tunnel
+Date                    --> 2002
+Slope for Vlt greater 0 --> 3.387104
+Slope for Vlt smaller 0 --> 3.387104
+Exct. Voltage           --> In Column
+Unit of Slope           --> [lbs / Volt/VoltExct]
+
+[2_diff]
+Comment                 --> Load Cell at the Subsonic Tunnel
+Date                    --> 2002
+Slope for Vlt greater 0 --> 3.526886
+Slope for Vlt smaller 0 --> 3.526886
+Exct. Voltage           --> In Column
+Unit of Slope           --> [lbs / Volt/VoltExct]
+
+[3_diff]
+Comment                 --> Load Cell at the Subsonic Tunnel
+Date                    --> 2002
+Slope for Vlt greater 0 --> 3.155794
+Slope for Vlt smaller 0 --> 3.155794
+Exct. Voltage           --> In Column
+Unit of Slope           --> [lbs / Volt/VoltExct]
+
+[8507_diff]
+Comment                 --> Load Cell at the Subsonic Tunnel
+Date                    --> 2002
+Slope for Vlt greater 0 --> .5894647
+Slope for Vlt smaller 0 --> .5894647
+Exct. Voltage           --> 10
+Unit of Slope           --> [lbs / Volt/VoltExct]
+
+[LSWT]
+Comment                 --> pDiff at the LSWT thru the VXI
+Date                    --> 2009
+Slope for Vlt greater 0 --> 0.0193367747
+Slope for Vlt smaller 0 --> 0.0193367747
+Exct. Voltage           --> 1
+Unit of Slope           --> [psia / Volt/VoltExct]
