@@ -382,7 +382,7 @@ Tunnel flow conditions are computed from the air-on pressure and temperature sen
 |--------|----------|--------|-------|
 | Pdiff transducer | Differential pressure (P0 - P_static) | dP | Voltage * cal slope gives psi |
 | Ptot transducer | Absolute total (stagnation) pressure | P0 | Voltage * cal slope gives psi |
-| Temp thermocouple | Total (stagnation) temperature | T0 | In settling chamber; raw * 10 = Fahrenheit |
+| Temp thermocouple | Total (stagnation) temperature | T0 | In settling chamber; slope is 0.1 V/deg (auto-detects degC vs degF) |
 
 ### SWT (Subsonic Wind Tunnel) Calculations
 
@@ -393,11 +393,19 @@ dP_Pa  = dP_psi * 6894.75729
 
 P0_Pa  = Ptot_raw * slope_p0 * 6894.75729
 
-T0_F   = Temp_raw * 10
-T0_C   = (T0_F - 32) * 5 / 9
-T0_K   = T0_C + 273.15
+# Thermocouple: two calibration vintages have been used for this facility
+#   Old cal: 0.1 V/degF  (raw * 10 -> degF, then convert to degC)
+#   New cal: 0.1 V/degC  (raw * 10 -> degC directly)
+# Auto-detect per-sample from voltage magnitude:
+if Temp_raw < 4.0:     # ~20 degC gives ~2.0 V on new cal
+    T0_C = Temp_raw * 10
+else:                   # ~70 degF gives ~7.0 V on old cal
+    T0_C = (Temp_raw * 10 - 32) * 5 / 9
+T0_K = T0_C + 273.15
 ```
 Where `slope_pdiff` and `slope_p0` are pressure transducer calibration slopes from the .PCF file.
+
+The thermocouple mode can be forced via `temp_cal_mode` on `calc_tunnel_conditions()` / `reduce_raw()` (`'auto'` | `'degC'` | `'degF'`). Default is `'auto'` — per-sample detection works for all historical and current data without configuration.
 
 **Step 2: Derive static pressure**
 ```

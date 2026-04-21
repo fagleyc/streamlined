@@ -54,12 +54,58 @@ T_REF = 273.15       # K, reference temperature
 S_SUTH = 110.4       # K, Sutherland constant for air
 
 
+def _convert_thermocouple_to_celsius(raw_temp: np.ndarray,
+                                     temp_cal_mode: str = 'auto') -> np.ndarray:
+    """
+    Convert raw thermocouple voltage to Celsius.
+
+    Two calibrations have been used with this facility's thermocouple:
+      - Old: 0.1 V/degF  (raw * 10 gives degF, then convert to degC)
+      - New: 0.1 V/degC  (raw * 10 gives degC directly)
+
+    Parameters
+    ----------
+    raw_temp : np.ndarray
+        Raw thermocouple voltage time-series.
+    temp_cal_mode : str
+        One of:
+          'auto'    - auto-detect per sample (< 4 V assume degC, else degF).
+                      A voltage near 4 V splits room-temperature degF (~7 V
+                      at 70 degF) from room-temperature degC (~2 V at 20 degC).
+          'degC'    - force new calibration: raw * 10 is already degC.
+          'degF'    - force old calibration: raw * 10 is degF, convert to degC.
+
+    Returns
+    -------
+    np.ndarray
+        Temperature in Celsius.
+    """
+    mode = (temp_cal_mode or 'auto').lower()
+    scaled = raw_temp * 10.0  # 0.1 V/deg -> deg (either scale)
+
+    if mode == 'degc':
+        return scaled
+    if mode == 'degf':
+        return (scaled - 32.0) * 5.0 / 9.0
+
+    # 'auto' - per-sample decision based on raw voltage magnitude
+    # At typical room temperature: degC slope gives ~2 V, degF slope ~7 V.
+    # Threshold of 4 V cleanly separates the two regimes.
+    raw_arr = np.asarray(raw_temp, dtype=float)
+    is_degf = raw_arr >= 4.0
+    out_degc = scaled.copy() if isinstance(scaled, np.ndarray) else np.array(scaled)
+    if np.any(is_degf):
+        out_degc = np.where(is_degf, (scaled - 32.0) * 5.0 / 9.0, scaled)
+    return out_degc
+
+
 def calc_tunnel_conditions(raw_data: Dict[str, np.ndarray],
                            pressure_cal: Dict[str, Any],
                            facility: str = 'SWT',
                            pdiff_channel: str = '220',
                            p0_channel: str = '690',
-                           ref_length_in: float = 1.0) -> TunnelConditions:
+                           ref_length_in: float = 1.0,
+                           temp_cal_mode: str = 'auto') -> TunnelConditions:
     """
     Calculate wind tunnel flow conditions.
 
@@ -77,6 +123,9 @@ def calc_tunnel_conditions(raw_data: Dict[str, np.ndarray],
         Name of total pressure calibration channel
     ref_length_in : float
         Reference length in inches for Reynolds number
+    temp_cal_mode : str
+        Thermocouple calibration mode: 'auto', 'degC', or 'degF'.
+        'auto' detects per-sample from voltage magnitude.
 
     Returns
     -------
@@ -112,8 +161,10 @@ def calc_tunnel_conditions(raw_data: Dict[str, np.ndarray],
 
         # Total (stagnation) temperature T0
         # Thermocouple is in the settling chamber, so it reads T0.
-        # Raw signal * 10 gives Fahrenheit, convert to Celsius then Kelvin.
-        T0_C = (raw_data['Temp'] * 10.0 - 32.0) * 5.0 / 9.0
+        # Slope is 0.1 V/deg (either degF or degC depending on cal vintage).
+        # See _convert_thermocouple_to_celsius for the branch logic.
+        T0_C = _convert_thermocouple_to_celsius(
+            raw_data['Temp'], temp_cal_mode)
         T0_K = T0_C + C_TO_K
 
         # ---------------------------------------------------------------
