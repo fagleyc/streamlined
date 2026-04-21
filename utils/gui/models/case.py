@@ -157,6 +157,7 @@ class TestCase:
     densities: np.ndarray = field(default_factory=lambda: np.array([]))
     temperatures: np.ndarray = field(default_factory=lambda: np.array([]))
     dynamic_pressures: np.ndarray = field(default_factory=lambda: np.array([]))
+    total_pressures: np.ndarray = field(default_factory=lambda: np.array([]))
 
     # Tunnel conditions object
     tunnel_conditions: TunnelConditions = field(default_factory=TunnelConditions)
