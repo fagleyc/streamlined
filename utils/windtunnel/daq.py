@@ -41,6 +41,11 @@ class FacilitySettings:
     pdiff: str = '220'
     p0_stil: str = '690'
     t0_stil: str = ''
+    # Thermocouple calibration mode: 'auto' | 'degC' | 'degF'
+    # 'auto' - per-sample detection (< 4 V = degC, else degF)
+    # 'degC' - new thermocouple cal (0.1 V/degC)
+    # 'degF' - old thermocouple cal (0.1 V/degF)
+    temp_cal_mode: str = 'auto'
 
 
 @dataclass
@@ -480,7 +485,8 @@ class DAQ:
             facility=self.fac.name,
             balance_config=self.fac.balance_config,
             pdiff_channel=self.fac.pdiff,
-            p0_channel=self.fac.p0_stil
+            p0_channel=self.fac.p0_stil,
+            temp_cal_mode=getattr(self.fac, 'temp_cal_mode', 'auto'),
         )
         return self
 

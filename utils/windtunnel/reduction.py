@@ -70,7 +70,8 @@ def reduce_single_point(raw_on: Dict[str, np.ndarray],
                         facility: str = 'SWT',
                         balance_config: str = 'Force',
                         pdiff_channel: str = '220',
-                        p0_channel: str = '690') -> ReducedDataPoint:
+                        p0_channel: str = '690',
+                        temp_cal_mode: str = 'auto') -> ReducedDataPoint:
     """
     Reduce a single test point from raw data to coefficients.
 
@@ -126,7 +127,8 @@ def reduce_single_point(raw_on: Dict[str, np.ndarray],
     # Calculate tunnel conditions (from air-on data)
     result.tunnel = calc_tunnel_conditions(
         raw_on, pressure_cal, facility,
-        pdiff_channel, p0_channel, geo.C
+        pdiff_channel, p0_channel, geo.C,
+        temp_cal_mode=temp_cal_mode,
     )
 
     # Extract pressure port data if available
@@ -155,7 +157,8 @@ def reduce_raw(raw_data_list: List[Dict[str, Dict[str, np.ndarray]]],
                facility: str = 'SWT',
                balance_config: str = 'Force',
                pdiff_channel: str = '220',
-               p0_channel: str = '690') -> List[ReducedDataPoint]:
+               p0_channel: str = '690',
+               temp_cal_mode: str = 'auto') -> List[ReducedDataPoint]:
     """
     Reduce a list of raw data points.
 
@@ -198,7 +201,8 @@ def reduce_raw(raw_data_list: List[Dict[str, Dict[str, np.ndarray]]],
 
         reduced = reduce_single_point(
             air_on, air_off, cal, geo, pressure_cal,
-            facility, balance_config, pdiff_channel, p0_channel
+            facility, balance_config, pdiff_channel, p0_channel,
+            temp_cal_mode=temp_cal_mode,
         )
         results.append(reduced)
 
