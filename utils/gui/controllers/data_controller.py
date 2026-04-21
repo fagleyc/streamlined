@@ -393,6 +393,7 @@ class ProcessingWorker(QRunnable):
                     Mach_list = []
                     rho_list = []
                     T_list = []
+                    Ptot_list = []
 
                     # Collect WRF forces and moments
                     lift_list = []
@@ -425,6 +426,9 @@ class ProcessingWorker(QRunnable):
                                 rho_list.append(np.mean(tc.rho))
                             if len(tc.T) > 0:
                                 T_list.append(np.mean(tc.T))
+                            if hasattr(tc, 'P_tot') and len(tc.P_tot) > 0:
+                                # Convert from Pa to psi (internal unit)
+                                Ptot_list.append(np.mean(tc.P_tot) / 6894.75729)
 
                         # Extract WRF forces/moments if available (wrf_aero is the aerodynamic forces)
                         if hasattr(rd, 'wrf_aero') and rd.wrf_aero is not None:
@@ -481,6 +485,8 @@ class ProcessingWorker(QRunnable):
                         case.densities = np.array(rho_list)
                     if T_list:
                         case.temperatures = np.array(T_list)
+                    if Ptot_list:
+                        case.total_pressures = np.array(Ptot_list)
 
                     # Store WRF forces and moments (in IPS units: lbf, lb-in)
                     if lift_list:
@@ -956,7 +962,8 @@ class DataController(QObject):
                             used_names[sheet_name] = 0
 
                         # Build header summary
-                        header = self._build_case_header(case)
+                        header = self._build_case_header(
+                            case, self.model.output_units)
                         startrow = len(header) + 1  # +1 blank row
                         df.to_excel(writer, sheet_name=sheet_name,
                                     index=False, startrow=startrow)
@@ -1008,9 +1015,20 @@ class DataController(QObject):
             self.error_occurred.emit("Export Error", f"Failed to export data:\n{str(e)}")
 
     @staticmethod
-    def _build_case_header(case) -> list:
+    def _build_case_header(case, output_units: str = 'IPS') -> list:
         """Build header key-value pairs summarizing a case for Excel export."""
         header = [("Case Name", case.name)]
+
+        # Set up converter and unit labels
+        converter = None
+        labels = None
+        try:
+            from utils.windtunnel.units import (
+                UnitSystem, UnitConverter, UNIT_LABELS)
+            converter = UnitConverter(UnitSystem[output_units])
+            labels = UNIT_LABELS[UnitSystem[output_units]]
+        except Exception:
+            pass
 
         if case.has_data:
             alphas = case.alphas.flatten()
@@ -1031,29 +1049,56 @@ class DataController(QObject):
         elif len(case.reynolds) > 0:
             header.append(("Reynolds Number", f"{np.mean(case.reynolds):.2e}"))
 
+        q_val = None
         if case.pressure is not None:
-            header.append(("Dynamic Pressure (Q)", f"{case.pressure:.4f}"))
+            q_val = case.pressure
         elif len(case.dynamic_pressures) > 0:
-            header.append(("Dynamic Pressure (Q)",
-                           f"{np.mean(case.dynamic_pressures):.4f}"))
+            q_val = float(np.mean(case.dynamic_pressures))
+        if q_val is not None:
+            if converter:
+                q_val = converter.convert_pressure(q_val)
+            unit = f" [{labels.pressure}]" if labels else ""
+            header.append((f"Dynamic Pressure (Q){unit}", f"{q_val:.4f}"))
 
+        if len(getattr(case, 'total_pressures', [])) > 0:
+            ptot_val = float(np.mean(case.total_pressures))
+            if converter:
+                ptot_val = converter.convert_pressure(ptot_val)
+            unit = f" [{labels.pressure}]" if labels else ""
+            header.append((f"Total Pressure (P_tot){unit}", f"{ptot_val:.4f}"))
+
+        u_val = None
         if case.velocity is not None:
-            header.append(("Velocity (U_inf)", f"{case.velocity:.2f}"))
+            u_val = case.velocity
         elif len(case.velocities) > 0:
-            header.append(("Velocity (U_inf)",
-                           f"{np.mean(case.velocities):.2f}"))
+            u_val = float(np.mean(case.velocities))
+        if u_val is not None:
+            if converter:
+                u_val = converter.convert_velocity(u_val)
+            unit = f" [{labels.velocity}]" if labels else ""
+            header.append((f"Velocity (U_inf){unit}", f"{u_val:.2f}"))
 
+        rho_val = None
         if case.density is not None:
-            header.append(("Density (rho)", f"{case.density:.6f}"))
+            rho_val = case.density
         elif len(case.densities) > 0:
-            header.append(("Density (rho)",
-                           f"{np.mean(case.densities):.6f}"))
+            rho_val = float(np.mean(case.densities))
+        if rho_val is not None:
+            if converter:
+                rho_val = converter.convert_density(rho_val)
+            unit = f" [{labels.density}]" if labels else ""
+            header.append((f"Density (rho){unit}", f"{rho_val:.6f}"))
 
+        t_val = None
         if case.temperature is not None:
-            header.append(("Temperature", f"{case.temperature:.1f}"))
+            t_val = case.temperature
         elif len(case.temperatures) > 0:
-            header.append(("Temperature",
-                           f"{np.mean(case.temperatures):.1f}"))
+            t_val = float(np.mean(case.temperatures))
+        if t_val is not None:
+            if converter:
+                t_val = converter.convert_temperature(t_val)
+            unit = f" [{labels.temperature}]" if labels else ""
+            header.append((f"Temperature{unit}", f"{t_val:.1f}"))
 
         for key, val in case.metadata.items():
             header.append((str(key), str(val)))

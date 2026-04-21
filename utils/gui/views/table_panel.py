@@ -455,6 +455,7 @@ class TablePanel(QWidget):
             ("U_inf", f"U_inf [{labels.velocity}]"),
             ("rho", f"rho [{labels.density}]"),
             ("T", f"T [{labels.temperature}]"),
+            ("P_tot", f"P_tot [{labels.pressure}]"),
         ]
 
         # Build column list based on checkbox
@@ -620,6 +621,7 @@ class TablePanel(QWidget):
         U_inf = _sort(case.velocities) if len(case.velocities) > 0 else None
         rho = _sort(case.densities) if len(case.densities) > 0 else None
         T = _sort(case.temperatures) if len(case.temperatures) > 0 else None
+        Ptot = _sort(case.total_pressures) if len(case.total_pressures) > 0 else None
 
         include_tunnel = self.chk_tunnel_conditions.isChecked()
 
@@ -708,6 +710,12 @@ class TablePanel(QWidget):
                     t_val = converter.convert_temperature(t_val)
                 row.append(t_val)
 
+                # P_tot (convert from psi)
+                ptot_val = Ptot[i] if Ptot is not None and i < len(Ptot) else 0.0
+                if converter:
+                    ptot_val = converter.convert_pressure(ptot_val)
+                row.append(ptot_val)
+
             rows.append(row)
 
         return rows
@@ -791,6 +799,16 @@ class TablePanel(QWidget):
                            ", ".join(f"{b:.1f}" for b in betas) + " deg"))
             header.append(("Data Points", str(case.n_points)))
 
+        # Set up converter and unit labels so header values match output units
+        converter = None
+        labels = None
+        if UNITS_AVAILABLE:
+            try:
+                converter = UnitConverter(UnitSystem[self._output_units])
+                labels = UNIT_LABELS[UnitSystem[self._output_units]]
+            except (KeyError, AttributeError):
+                pass
+
         # Tunnel conditions
         if case.mach_number is not None:
             header.append(("Mach", f"{case.mach_number:.4f}"))
@@ -802,29 +820,61 @@ class TablePanel(QWidget):
         elif len(case.reynolds) > 0:
             header.append(("Reynolds Number", f"{np.mean(case.reynolds):.2e}"))
 
+        # Dynamic pressure (stored in psi, convert to output)
+        q_val = None
         if case.pressure is not None:
-            header.append(("Dynamic Pressure (Q)", f"{case.pressure:.4f}"))
+            q_val = case.pressure
         elif len(case.dynamic_pressures) > 0:
-            header.append(("Dynamic Pressure (Q)",
-                           f"{np.mean(case.dynamic_pressures):.4f}"))
+            q_val = float(np.mean(case.dynamic_pressures))
+        if q_val is not None:
+            if converter:
+                q_val = converter.convert_pressure(q_val)
+            unit = f" [{labels.pressure}]" if labels else ""
+            header.append((f"Dynamic Pressure (Q){unit}", f"{q_val:.4f}"))
 
+        # Total pressure (stored in psi, convert to output)
+        if len(case.total_pressures) > 0:
+            ptot_val = float(np.mean(case.total_pressures))
+            if converter:
+                ptot_val = converter.convert_pressure(ptot_val)
+            unit = f" [{labels.pressure}]" if labels else ""
+            header.append((f"Total Pressure (P_tot){unit}", f"{ptot_val:.4f}"))
+
+        # Velocity (stored in m/s, convert to output)
+        u_val = None
         if case.velocity is not None:
-            header.append(("Velocity (U_inf)", f"{case.velocity:.2f}"))
+            u_val = case.velocity
         elif len(case.velocities) > 0:
-            header.append(("Velocity (U_inf)",
-                           f"{np.mean(case.velocities):.2f}"))
+            u_val = float(np.mean(case.velocities))
+        if u_val is not None:
+            if converter:
+                u_val = converter.convert_velocity(u_val)
+            unit = f" [{labels.velocity}]" if labels else ""
+            header.append((f"Velocity (U_inf){unit}", f"{u_val:.2f}"))
 
+        # Density (stored in kg/m^3, convert to output)
+        rho_val = None
         if case.density is not None:
-            header.append(("Density (rho)", f"{case.density:.6f}"))
+            rho_val = case.density
         elif len(case.densities) > 0:
-            header.append(("Density (rho)",
-                           f"{np.mean(case.densities):.6f}"))
+            rho_val = float(np.mean(case.densities))
+        if rho_val is not None:
+            if converter:
+                rho_val = converter.convert_density(rho_val)
+            unit = f" [{labels.density}]" if labels else ""
+            header.append((f"Density (rho){unit}", f"{rho_val:.6f}"))
 
+        # Temperature (stored in Celsius, convert to output)
+        t_val = None
         if case.temperature is not None:
-            header.append(("Temperature", f"{case.temperature:.1f}"))
+            t_val = case.temperature
         elif len(case.temperatures) > 0:
-            header.append(("Temperature",
-                           f"{np.mean(case.temperatures):.1f}"))
+            t_val = float(np.mean(case.temperatures))
+        if t_val is not None:
+            if converter:
+                t_val = converter.convert_temperature(t_val)
+            unit = f" [{labels.temperature}]" if labels else ""
+            header.append((f"Temperature{unit}", f"{t_val:.1f}"))
 
         # Calibration information
         header.extend(self._build_calibration_header())
@@ -875,7 +925,15 @@ class TablePanel(QWidget):
             meta['beta_values'] = np.array(betas) if betas else np.array([])
             meta['n_points'] = np.float64(case.n_points)
 
-        # Tunnel conditions (mean values)
+        # Set up converter so meta values are in output units
+        converter = None
+        if UNITS_AVAILABLE:
+            try:
+                converter = UnitConverter(UnitSystem[self._output_units])
+            except (KeyError, AttributeError):
+                pass
+
+        # Tunnel conditions (mean values, converted to output units)
         if case.mach_number is not None:
             meta['Mach'] = np.float64(case.mach_number)
         elif len(case.machs) > 0:
@@ -886,25 +944,46 @@ class TablePanel(QWidget):
         elif len(case.reynolds) > 0:
             meta['Reynolds'] = np.float64(np.mean(case.reynolds))
 
+        q_val = None
         if case.pressure is not None:
-            meta['Q'] = np.float64(case.pressure)
+            q_val = case.pressure
         elif len(case.dynamic_pressures) > 0:
-            meta['Q'] = np.float64(np.mean(case.dynamic_pressures))
+            q_val = float(np.mean(case.dynamic_pressures))
+        if q_val is not None:
+            meta['Q'] = np.float64(
+                converter.convert_pressure(q_val) if converter else q_val)
 
+        if len(case.total_pressures) > 0:
+            ptot_val = float(np.mean(case.total_pressures))
+            meta['P_tot'] = np.float64(
+                converter.convert_pressure(ptot_val) if converter else ptot_val)
+
+        u_val = None
         if case.velocity is not None:
-            meta['U_inf'] = np.float64(case.velocity)
+            u_val = case.velocity
         elif len(case.velocities) > 0:
-            meta['U_inf'] = np.float64(np.mean(case.velocities))
+            u_val = float(np.mean(case.velocities))
+        if u_val is not None:
+            meta['U_inf'] = np.float64(
+                converter.convert_velocity(u_val) if converter else u_val)
 
+        rho_val = None
         if case.density is not None:
-            meta['rho'] = np.float64(case.density)
+            rho_val = case.density
         elif len(case.densities) > 0:
-            meta['rho'] = np.float64(np.mean(case.densities))
+            rho_val = float(np.mean(case.densities))
+        if rho_val is not None:
+            meta['rho'] = np.float64(
+                converter.convert_density(rho_val) if converter else rho_val)
 
+        t_val = None
         if case.temperature is not None:
-            meta['temperature'] = np.float64(case.temperature)
+            t_val = case.temperature
         elif len(case.temperatures) > 0:
-            meta['temperature'] = np.float64(np.mean(case.temperatures))
+            t_val = float(np.mean(case.temperatures))
+        if t_val is not None:
+            meta['temperature'] = np.float64(
+                converter.convert_temperature(t_val) if converter else t_val)
 
         # Date
         if case.date:
@@ -994,7 +1073,7 @@ class TablePanel(QWidget):
 
         # Tunnel conditions
         if hasattr(pt, 'tunnel') and pt.tunnel is not None:
-            for attr in ('Q', 'U_inf', 'Mach', 'Re', 'rho', 'T'):
+            for attr in ('Q', 'U_inf', 'Mach', 'Re', 'rho', 'T', 'P_tot'):
                 val = getattr(pt.tunnel, attr, None)
                 if val is not None and len(val) > 0:
                     data[f'tunnel_{attr}'] = np.asarray(val)
