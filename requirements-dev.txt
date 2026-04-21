@@ -1,0 +1,8 @@
+# Streamlined development / build dependencies
+# Install after requirements.txt:
+#   pip install -r requirements.txt -r requirements-dev.txt
+
+-r requirements.txt
+
+# Build tool for standalone executable
+pyinstaller>=6.0
