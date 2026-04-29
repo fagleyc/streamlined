@@ -483,6 +483,35 @@ class AboutDialog(QDialog):
             </ul>
 
             <h3>Changelog</h3>
+            <p><b>v1.2.5</b></p>
+            <ul>
+                <li>Auto-detect thermocouple calibration vintage per sample:
+                    new cal (0.1 V/&deg;C) vs old cal (0.1 V/&deg;F).
+                    Optional <code>temp_cal_mode</code> override on
+                    <code>calc_tunnel_conditions()</code> /
+                    <code>reduce_raw()</code> for forced behavior</li>
+                <li>New <code>raw</code> export group (MAT and HDF5):
+                    per-point mean of pdiff, ptot, ttot, alpha, beta, and
+                    BRF forces / moments (Fx, Fy, Fz, Mx, My, Mz) in the
+                    selected output units, plus a <code>units</code> label</li>
+                <li>User-friendly error dialogs replace silent failures:
+                    pre-flight checks before processing flag missing
+                    calibrations, missing data directories, no .tdms files,
+                    and invalid geometry with actionable messages</li>
+                <li>Calibration loading detects corrupt or wrong-format files
+                    with a dedicated &ldquo;Invalid Calibration File&rdquo; dialog</li>
+                <li>Export dialog blocks opening when no reduced cases exist
+                    and surfaces write failures as a critical dialog rather
+                    than a console traceback</li>
+                <li>Configuration save / load surfaces JSON parse errors and
+                    missing-file conditions as targeted dialogs</li>
+                <li>Worker reports &ldquo;Processing Failed&rdquo; if every
+                    configuration errors out, and notes partial-failure
+                    counts in the success status message</li>
+                <li>Cleaned up <code>requirements.txt</code>: dropped unused
+                    sympy, moved pyinstaller to <code>requirements-dev.txt</code>;
+                    added <code>INSTALL.md</code> with step-by-step setup</li>
+            </ul>
             <p><b>v1.2.4</b></p>
             <ul>
                 <li>Compressible isentropic tunnel conditions: dynamic pressure,
