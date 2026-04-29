@@ -336,6 +336,13 @@ class MainWindow(QMainWindow):
     def _show_export_dialog(self):
         """Show the consolidated export dialog."""
         case_names = [c.name for c in self.model.cases if c.has_data]
+        if not case_names:
+            QMessageBox.information(
+                self, "Nothing to Export",
+                "No reduced cases are available to export.\n\n"
+                "Load a data directory and process the data before exporting.")
+            return
+
         current_case = None
         case_id = self.table_panel.cmb_case.currentData()
         if case_id:
@@ -351,10 +358,22 @@ class MainWindow(QMainWindow):
         )
         if dialog.exec() == ExportDialog.DialogCode.Accepted:
             config = dialog.get_export_config()
-            if config['filepath']:
-                self.settings.last_export_directory = str(
-                    Path(config['filepath']).parent)
-            self.table_panel.do_export(config)
+            if not config.get('filepath'):
+                QMessageBox.warning(
+                    self, "Export Cancelled",
+                    "No file path was selected. Export aborted.")
+                return
+            self.settings.last_export_directory = str(
+                Path(config['filepath']).parent)
+            try:
+                self.table_panel.do_export(config)
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                QMessageBox.critical(
+                    self, "Export Failed",
+                    f"Failed to write {Path(config['filepath']).name}:\n\n"
+                    f"{type(e).__name__}: {e}")
 
     def _show_geometry_dialog(self):
         """Show multi-geometry settings dialog."""

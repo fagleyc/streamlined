@@ -186,6 +186,7 @@ class ProcessingWorker(QRunnable):
             # Second pass: process each configuration
             processed_count = 0
             dir_names = []
+            failed_configs = []
 
             for directory, dir_name, grouped in dir_configs:
                 if self._cancelled:
@@ -209,20 +210,38 @@ class ProcessingWorker(QRunnable):
                     except Exception as e:
                         # Log error but continue processing other configurations
                         traceback.print_exc()
+                        failed_configs.append(
+                            f"{config_name}: {type(e).__name__}: {e}")
 
                     self.signals.progress.emit(processed_count, total_expected)
 
             # Final progress update
             self.signals.progress.emit(total_expected, total_expected)
 
+            # If everything failed, raise as an error so the user sees it
+            if processed_count == 0 and failed_configs:
+                self.signals.error.emit(
+                    "Processing Failed",
+                    "All configurations failed to process. First few errors:\n\n"
+                    + "\n".join(failed_configs[:5])
+                    + ("\n\n..." if len(failed_configs) > 5 else ""))
+                return
+
             # Summary message
             if len(dir_names) == 1:
-                self.signals.finished.emit(f"Loaded {dir_names[0]}: {processed_count} configuration(s)")
+                msg = (f"Loaded {dir_names[0]}: "
+                       f"{processed_count} configuration(s)")
             else:
-                self.signals.finished.emit(f"Loaded {len(dir_names)} directories: {processed_count} configuration(s)")
+                msg = (f"Loaded {len(dir_names)} directories: "
+                       f"{processed_count} configuration(s)")
+            if failed_configs:
+                msg += f"  ({len(failed_configs)} failed - see console)"
+            self.signals.finished.emit(msg)
 
         except Exception as e:
-            self.signals.error.emit("Processing Error", str(e))
+            self.signals.error.emit(
+                "Processing Error",
+                f"{type(e).__name__}: {e}")
             traceback.print_exc()
 
     def _process_configuration(self, config_name: str,
@@ -662,14 +681,27 @@ class DataController(QObject):
 
     def load_balance_calibration(self, filepath: str) -> bool:
         """Load balance calibration file (.vol)."""
+        if not filepath or not Path(filepath).exists():
+            self.error_occurred.emit(
+                "Calibration File Not Found",
+                f"Balance calibration file does not exist:\n{filepath}\n\n"
+                "Choose a valid .vol file.")
+            return False
+
         try:
             if BACKEND_AVAILABLE:
                 from utils.windtunnel.calibration import read_vol_file, calc_coeffs
                 self._balance_cal = read_vol_file(filepath)
-                # Calculate calibration coefficients
-                if self._balance_cal:
-                    cal_type = self.model.cal_type
-                    self._balance_cal = calc_coeffs(self._balance_cal, cal_type)
+                if not self._balance_cal:
+                    self.error_occurred.emit(
+                        "Invalid Calibration File",
+                        f"Could not parse balance calibration:\n"
+                        f"{Path(filepath).name}\n\n"
+                        "The file may be corrupt or not in the expected "
+                        "(.vol) format.")
+                    return False
+                cal_type = self.model.cal_type
+                self._balance_cal = calc_coeffs(self._balance_cal, cal_type)
             else:
                 # Dummy for testing
                 self._balance_cal = {'filepath': filepath, 'loaded': True}
@@ -691,8 +723,11 @@ class DataController(QObject):
             return True
 
         except Exception as e:
-            self.error_occurred.emit("Calibration Error",
-                                     f"Failed to load balance calibration:\n{str(e)}")
+            self.error_occurred.emit(
+                "Calibration Load Error",
+                f"Failed to load balance calibration "
+                f"'{Path(filepath).name}':\n\n"
+                f"{type(e).__name__}: {e}")
             traceback.print_exc()
             return False
 
@@ -700,12 +735,23 @@ class DataController(QObject):
                                 balance_config: str,
                                 name: str = '') -> bool:
         """Load a balance cal file with specific settings (for per-case use)."""
+        if not filepath or not Path(filepath).exists():
+            self.error_occurred.emit(
+                "Calibration File Not Found",
+                f"Balance calibration file does not exist:\n{filepath}")
+            return False
+
         try:
             if BACKEND_AVAILABLE:
                 from utils.windtunnel.calibration import read_vol_file, calc_coeffs
                 cal_obj = read_vol_file(filepath)
-                if cal_obj:
-                    cal_obj = calc_coeffs(cal_obj, cal_type)
+                if not cal_obj:
+                    self.error_occurred.emit(
+                        "Invalid Calibration File",
+                        f"Could not parse '{Path(filepath).name}'.\n\n"
+                        "The file may be corrupt or not a .vol file.")
+                    return False
+                cal_obj = calc_coeffs(cal_obj, cal_type)
             else:
                 cal_obj = None
 
@@ -722,17 +768,35 @@ class DataController(QObject):
             return True
 
         except Exception as e:
-            self.error_occurred.emit("Calibration Error",
-                                     f"Failed to load calibration:\n{str(e)}")
+            self.error_occurred.emit(
+                "Calibration Load Error",
+                f"Failed to load calibration "
+                f"'{Path(filepath).name}':\n\n"
+                f"{type(e).__name__}: {e}")
             traceback.print_exc()
             return False
 
     def load_pressure_calibration(self, filepath: str) -> bool:
         """Load pressure calibration file (.pcf)."""
+        if not filepath or not Path(filepath).exists():
+            self.error_occurred.emit(
+                "Calibration File Not Found",
+                f"Pressure calibration file does not exist:\n{filepath}\n\n"
+                "Choose a valid .PCF file.")
+            return False
+
         try:
             if BACKEND_AVAILABLE:
                 from utils.windtunnel.calibration import read_pcf_file
                 self._pressure_cal = read_pcf_file(filepath)
+                if not self._pressure_cal:
+                    self.error_occurred.emit(
+                        "Invalid Calibration File",
+                        f"Could not parse pressure calibration:\n"
+                        f"{Path(filepath).name}\n\n"
+                        "The file may be corrupt or not in the expected "
+                        "(.PCF) format.")
+                    return False
             else:
                 # Dummy for testing
                 self._pressure_cal = {'filepath': filepath, 'loaded': True}
@@ -743,13 +807,79 @@ class DataController(QObject):
             return True
 
         except Exception as e:
-            self.error_occurred.emit("Calibration Error",
-                                     f"Failed to load pressure calibration:\n{str(e)}")
+            self.error_occurred.emit(
+                "Calibration Load Error",
+                f"Failed to load pressure calibration "
+                f"'{Path(filepath).name}':\n\n"
+                f"{type(e).__name__}: {e}")
             traceback.print_exc()
             return False
 
     def load_data_directories(self, directories: List[str], recursive: bool = False, clear_existing: bool = True):
         """Load and process data from multiple directories."""
+        # ----- Pre-flight checks (show user-friendly dialogs) -----
+        if not directories:
+            self.error_occurred.emit(
+                "No Data Directories",
+                "No data directories were selected. Use File > Load Data Directory to choose a folder containing TDMS files.")
+            return
+
+        valid_dirs = [d for d in directories if d and Path(d).exists()]
+        if not valid_dirs:
+            self.error_occurred.emit(
+                "Data Directory Not Found",
+                "None of the selected data directories exist:\n\n"
+                + "\n".join(directories) + "\n\nVerify the path and try again.")
+            return
+
+        # Check at least one TDMS file exists in the directories
+        any_tdms = False
+        for d in valid_dirs:
+            dp = Path(d)
+            files = (list(dp.rglob("*.tdms")) if recursive
+                     else list(dp.glob("*.tdms")))
+            if files:
+                any_tdms = True
+                break
+        if not any_tdms:
+            search = "recursively" if recursive else "in the top level"
+            self.error_occurred.emit(
+                "No TDMS Files Found",
+                f"No .tdms files were found {search} of:\n\n"
+                + "\n".join(valid_dirs)
+                + "\n\nIf the files are in subfolders, enable 'Recursive' on the Load Data dialog.")
+            return
+
+        # Balance calibration is required to compute forces
+        if not self._balance_cal and not self._balance_cal_file:
+            self.error_occurred.emit(
+                "No Balance Calibration",
+                "Load a balance calibration (.vol) file before processing data.\n\n"
+                "Use File > Load Balance Calibration or the 'Browse' button in the Calibration panel.")
+            return
+
+        # Pressure calibration is required to compute tunnel conditions
+        if not self._pressure_cal and not self._pressure_cal_file:
+            self.error_occurred.emit(
+                "No Pressure Calibration",
+                "Load a pressure calibration (.PCF) file before processing data.\n\n"
+                "Use File > Load Pressure Calibration or the 'Browse' button in the Calibration panel.")
+            return
+
+        # Sanity check on geometry
+        default_geo = self.model.get_geometry(self.model.default_geometry)
+        mac = default_geo.get('mac', 0.0)
+        ref_area = default_geo.get('ref_area', 0.0)
+        if mac <= 0 or ref_area <= 0:
+            self.error_occurred.emit(
+                "Invalid Geometry",
+                f"Reference geometry has invalid values:\n"
+                f"  MAC = {mac}\n  Reference Area = {ref_area}\n\n"
+                "Set positive values via Edit > Model Geometry before processing.")
+            return
+
+        # ----- Pre-flight passed; proceed with processing -----
+
         # Cancel any existing processing
         if self._current_worker:
             self._current_worker.cancel()
@@ -757,6 +887,9 @@ class DataController(QObject):
         if clear_existing:
             # Clear existing cases before loading
             self.model.clear_all()
+
+        # Use only the valid directories from here on
+        directories = valid_dirs
 
         # Store directories for potential reprocessing
         self._last_directories = list(directories)
@@ -829,8 +962,18 @@ class DataController(QObject):
     def reprocess_case(self, case_id: str):
         """Re-reduce a single case with its assigned geometry and calibration."""
         case = self.model.cases.get(case_id)
-        if not case or not case.daq:
-            self.status_changed.emit("Cannot reprocess: case has no raw data")
+        if not case:
+            self.error_occurred.emit(
+                "Case Not Found",
+                f"Could not find case with id '{case_id}'. "
+                "It may have been removed.")
+            return
+        if not case.daq:
+            self.error_occurred.emit(
+                "Cannot Reprocess",
+                f"Case '{case.name}' has no raw DAQ data attached.\n\n"
+                "Reload the data directory (File > Load Data Directory) "
+                "to attach raw data so cases can be re-reduced.")
             return
 
         try:
@@ -1202,8 +1345,13 @@ class DataController(QObject):
             return True
 
         except Exception as e:
-            self.error_occurred.emit("Save Error",
-                                     f"Failed to save configuration:\n{str(e)}")
+            self.error_occurred.emit(
+                "Save Configuration Failed",
+                f"Could not save configuration to:\n{filepath}\n\n"
+                f"{type(e).__name__}: {e}\n\n"
+                "Check that the destination is writable and not "
+                "open in another program.")
+            traceback.print_exc()
             return False
 
     def load_configuration(self, filepath: str) -> bool:
@@ -1222,9 +1370,24 @@ class DataController(QObject):
         """
         import json
 
+        if not filepath or not Path(filepath).exists():
+            self.error_occurred.emit(
+                "Configuration Not Found",
+                f"Configuration file does not exist:\n{filepath}")
+            return False
+
         try:
             with open(filepath, 'r') as f:
-                config = json.load(f)
+                try:
+                    config = json.load(f)
+                except json.JSONDecodeError as je:
+                    self.error_occurred.emit(
+                        "Invalid Configuration File",
+                        f"'{Path(filepath).name}' is not valid JSON:\n\n"
+                        f"{je}\n\n"
+                        "The file may be corrupt or from a different "
+                        "application.")
+                    return False
 
             # Load calibration files (resolve relative to config directory)
             config_dir = Path(filepath).parent
@@ -1316,8 +1479,12 @@ class DataController(QObject):
             return True
 
         except Exception as e:
-            self.error_occurred.emit("Load Error",
-                                     f"Failed to load configuration:\n{str(e)}")
+            self.error_occurred.emit(
+                "Load Configuration Failed",
+                f"Could not load configuration from:\n{filepath}\n\n"
+                f"{type(e).__name__}: {e}\n\n"
+                "The file may be corrupt, from an incompatible version, "
+                "or reference paths that no longer exist.")
             traceback.print_exc()
             return False
 
