@@ -1012,6 +1012,114 @@ class TablePanel(QWidget):
 
         return meta
 
+    def _build_raw_dict(self, case: TestCase) -> dict:
+        """
+        Build a 'raw' sub-struct of mean values per test point for export.
+
+        Includes calibrated tunnel quantities (pdiff, ptot, ttot) and
+        body-frame balance forces/moments (Fx, Fy, Fz, Mx, My, Mz),
+        plus the selected output unit system label. All values are
+        converted to the user's selected output units, NaN-filled if
+        the per-point series is missing.
+        """
+        # Set up converter
+        converter = None
+        if UNITS_AVAILABLE:
+            try:
+                converter = UnitConverter(UnitSystem[self._output_units])
+            except (KeyError, AttributeError):
+                pass
+
+        raw = {'units': self._output_units}
+
+        daq = getattr(case, 'daq', None)
+        red = getattr(daq, 'red', None) if daq is not None else None
+        if not red:
+            return raw
+
+        n = len(red)
+        # Pre-allocate arrays
+        pdiff = np.full(n, np.nan)   # Differential pressure (Q in psi)
+        ptot = np.full(n, np.nan)    # Total pressure (Pa internally)
+        ttot = np.full(n, np.nan)    # Total temperature (C internally)
+        Fx = np.full(n, np.nan)
+        Fy = np.full(n, np.nan)
+        Fz = np.full(n, np.nan)
+        Mx = np.full(n, np.nan)
+        My = np.full(n, np.nan)
+        Mz = np.full(n, np.nan)
+        alpha = np.full(n, np.nan)
+        beta = np.full(n, np.nan)
+
+        for i, pt in enumerate(red):
+            # Tunnel conditions (means)
+            tc = getattr(pt, 'tunnel', None)
+            if tc is not None:
+                if hasattr(tc, 'Q') and len(tc.Q) > 0:
+                    pdiff[i] = float(np.mean(tc.Q))  # psi
+                if hasattr(tc, 'P_tot') and len(tc.P_tot) > 0:
+                    # P_tot is in Pa internally; convert to psi for the
+                    # uniform 'pressure' converter
+                    ptot[i] = float(np.mean(tc.P_tot)) / 6894.75729
+                if hasattr(tc, 'T0') and len(tc.T0) > 0:
+                    ttot[i] = float(np.mean(tc.T0))  # Celsius
+                elif hasattr(tc, 'T') and len(tc.T) > 0:
+                    ttot[i] = float(np.mean(tc.T))
+
+            # BRF forces (air-on minus mean of air-off, in IPS lbf / lb-in)
+            brf_on = getattr(pt, 'brf_on', None)
+            brf_off = getattr(pt, 'brf_off', None)
+
+            def _aero(attr):
+                if brf_on is None:
+                    return np.nan
+                on_arr = getattr(brf_on, attr, None)
+                if on_arr is None or len(on_arr) == 0:
+                    return np.nan
+                if brf_off is not None:
+                    off_arr = getattr(brf_off, attr, None)
+                    if off_arr is not None and len(off_arr) > 0:
+                        return float(np.mean(on_arr) - np.mean(off_arr))
+                return float(np.mean(on_arr))
+
+            Fx[i] = _aero('Fx')
+            Fy[i] = _aero('Fy')
+            Fz[i] = _aero('Fz')
+            Mx[i] = _aero('Mx')
+            My[i] = _aero('My')
+            Mz[i] = _aero('Mz')
+
+            # Alpha / Beta (means)
+            if hasattr(pt, 'alpha') and len(pt.alpha) > 0:
+                alpha[i] = float(np.mean(pt.alpha))
+            if hasattr(pt, 'beta') and len(pt.beta) > 0:
+                beta[i] = float(np.mean(pt.beta))
+
+        # Apply unit conversions
+        if converter:
+            pdiff = converter.convert_pressure(pdiff)
+            ptot = converter.convert_pressure(ptot)
+            ttot = converter.convert_temperature(ttot)
+            Fx = converter.convert_force(Fx)
+            Fy = converter.convert_force(Fy)
+            Fz = converter.convert_force(Fz)
+            Mx = converter.convert_moment(Mx)
+            My = converter.convert_moment(My)
+            Mz = converter.convert_moment(Mz)
+
+        raw['alpha'] = alpha
+        raw['beta'] = beta
+        raw['pdiff'] = pdiff
+        raw['ptot'] = ptot
+        raw['ttot'] = ttot
+        raw['Fx'] = Fx
+        raw['Fy'] = Fy
+        raw['Fz'] = Fz
+        raw['Mx'] = Mx
+        raw['My'] = My
+        raw['Mz'] = Mz
+        return raw
+
     def _build_calibration_header(self) -> list:
         """Build calibration key-value pairs for Excel/header export."""
         header = []
@@ -1209,6 +1317,9 @@ class TablePanel(QWidget):
                     # Add metadata sub-struct
                     case_struct['meta'] = self._build_case_meta(case)
 
+                    # Add raw (per-point means in selected output units)
+                    case_struct['raw'] = self._build_raw_dict(case)
+
                     # Add unsteady (time-series) data if requested
                     if self.chk_include_unsteady.isChecked():
                         daq = getattr(case, 'daq', None)
@@ -1352,6 +1463,15 @@ class TablePanel(QWidget):
                             avg_grp.create_dataset(
                                 col_name,
                                 data=case_df[col_name].values)
+
+                        # Raw (per-point means) sub-group
+                        raw_dict = self._build_raw_dict(case)
+                        raw_grp = case_grp.create_group('raw')
+                        for k, v in raw_dict.items():
+                            if isinstance(v, np.ndarray):
+                                raw_grp.create_dataset(k, data=v)
+                            else:
+                                raw_grp.attrs[k] = v
 
                         # Unsteady (time-series) data sub-group
                         if include_unsteady:
