@@ -159,6 +159,15 @@ class TestCase:
     dynamic_pressures: np.ndarray = field(default_factory=lambda: np.array([]))
     total_pressures: np.ndarray = field(default_factory=lambda: np.array([]))
 
+    # Blockage-corrected arrays (populated when a tunnel correction is
+    # active; otherwise empty and the uncorrected arrays are primary).
+    alphas_corr: np.ndarray = field(default_factory=lambda: np.array([]))
+    Cl_corr: np.ndarray = field(default_factory=lambda: np.array([]))
+    Cd_corr: np.ndarray = field(default_factory=lambda: np.array([]))
+    blockage_epsilon: np.ndarray = field(
+        default_factory=lambda: np.array([]))
+    blockage_method: str = 'none'
+
     # Tunnel conditions object
     tunnel_conditions: TunnelConditions = field(default_factory=TunnelConditions)
 

@@ -1229,10 +1229,100 @@ class TablePanel(QWidget):
             return
         self._do_export(filepath, fmt)
 
+    def _export_coe(self, output_dir: str):
+        """Export reduced cases to legacy Reduce2 .COE files.
+
+        One .COE file is written per case per unique beta. The output
+        directory is used as the destination; filenames are derived from
+        each case name and beta value.
+        """
+        from pathlib import Path as _Path
+
+        try:
+            from utils.windtunnel.coe_writer import write_coe_files
+        except Exception as e:
+            QMessageBox.critical(
+                self, "COE Export Failed",
+                f"Could not import COE writer module:\n{e}")
+            return
+
+        # Resolve output directory: if the user typed a file path, use
+        # its parent. If it's already a directory, use as-is.
+        p = _Path(output_dir)
+        if p.exists() and p.is_file():
+            out_dir = p.parent
+        else:
+            out_dir = p
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        # Determine which cases to export
+        case_id = self.cmb_case.currentData()
+        cases_to_export = []
+        if case_id is None:
+            for case in self.model.cases:
+                if case.has_data:
+                    cases_to_export.append(case)
+        else:
+            case = self.model.cases.get(case_id)
+            if case and case.has_data:
+                cases_to_export.append(case)
+
+        if not cases_to_export:
+            QMessageBox.warning(
+                self, "COE Export",
+                "No reduced cases available to export.")
+            return
+
+        # Cases without raw DAQ data attached cannot be exported to COE
+        # because the format requires per-point body-frame elements and
+        # tunnel conditions; only the in-memory case object has those.
+        bal_file = (str(self.model.balance_cal_file)
+                    if self.model.balance_cal_file else '')
+
+        all_written = []
+        skipped = []
+        for case in cases_to_export:
+            if not getattr(case, 'daq', None):
+                skipped.append(case.name)
+                continue
+            geo = self.model.get_geometry_for_case(case.id)
+            try:
+                paths = write_coe_files(
+                    case=case,
+                    output_dir=str(out_dir),
+                    case_geometry=geo,
+                    balance_cal_file=bal_file)
+                all_written.extend(paths)
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                QMessageBox.critical(
+                    self, "COE Export Failed",
+                    f"Failed to write COE for case '{case.name}':\n\n"
+                    f"{type(e).__name__}: {e}")
+                return
+
+        # Summary dialog
+        msg_lines = [f"Wrote {len(all_written)} .COE file(s) to:",
+                     str(out_dir), ""]
+        msg_lines.extend(f"  - {_Path(p).name}" for p in all_written[:10])
+        if len(all_written) > 10:
+            msg_lines.append(f"  ... and {len(all_written) - 10} more")
+        if skipped:
+            msg_lines.append("")
+            msg_lines.append(
+                f"Skipped (no raw DAQ data attached): {', '.join(skipped)}")
+        QMessageBox.information(
+            self, "COE Export Complete", '\n'.join(msg_lines))
+
     def _do_export(self, filepath: str, format: str):
         """Perform the export."""
         try:
             import pandas as pd
+
+            if format == 'coe':
+                self._export_coe(filepath)
+                return
 
             if format == 'excel':
                 # Export each case to its own sheet

@@ -337,6 +337,220 @@ class OutputUnitsDialog(QDialog):
         return self.cmb_units.currentText()
 
 
+class TunnelCorrectionsDialog(QDialog):
+    """
+    Dialog for configuring tunnel blockage / wall-effect corrections.
+
+    The user selects an approach from a dropdown; the relevant input
+    fields enable / disable based on the selection.  Defaults are
+    chosen so an unchanged dialog yields zero correction.
+    """
+
+    METHODS = [
+        ('none', 'None (no correction)'),
+        ('pope_kirsten', 'Pope-Harper (Kirsten Wind Tunnel)'),
+        ('pope_generic', 'Pope-Harper (generic facility)'),
+        ('maskell', 'Maskell (stalled / bluff-body)'),
+        ('glauert_closed', 'Glauert (closed test section)'),
+    ]
+
+    def __init__(self, parent=None, current_config: dict = None):
+        super().__init__(parent)
+        self.setWindowTitle('Tunnel Corrections')
+        self.setMinimumWidth(440)
+        cfg = current_config or {'method': 'none'}
+        self._setup_ui(cfg)
+
+    def _setup_ui(self, cfg: dict):
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+
+        # Method selector
+        method_group = QGroupBox('Correction Approach')
+        method_layout = QFormLayout(method_group)
+        self.cmb_method = QComboBox()
+        for key, label in self.METHODS:
+            self.cmb_method.addItem(label, key)
+        idx = self.cmb_method.findData(cfg.get('method', 'none'))
+        if idx >= 0:
+            self.cmb_method.setCurrentIndex(idx)
+        self.cmb_method.currentIndexChanged.connect(self._on_method_changed)
+        method_layout.addRow('Method:', self.cmb_method)
+        layout.addWidget(method_group)
+
+        # Description label updates per-method
+        self.lbl_description = QLabel('')
+        self.lbl_description.setWordWrap(True)
+        self.lbl_description.setStyleSheet(
+            f'color: {DarkTheme.TEXT_SECONDARY}; font-style: italic;')
+        layout.addWidget(self.lbl_description)
+
+        # Test section geometry
+        self.geom_group = QGroupBox('Test Section / Reference')
+        geom_layout = QFormLayout(self.geom_group)
+
+        self.spn_ts_area = QDoubleSpinBox()
+        self.spn_ts_area.setRange(0.0, 1e7)
+        self.spn_ts_area.setDecimals(2)
+        self.spn_ts_area.setSuffix(' in^2')
+        self.spn_ts_area.setValue(
+            cfg.get('test_section_area_in2', 0.0))
+        geom_layout.addRow('Test section area:', self.spn_ts_area)
+
+        self.spn_ts_w = QDoubleSpinBox()
+        self.spn_ts_w.setRange(0.0, 1e4)
+        self.spn_ts_w.setDecimals(2)
+        self.spn_ts_w.setSuffix(' in')
+        self.spn_ts_w.setValue(cfg.get('test_section_width_in', 0.0))
+        geom_layout.addRow('Test section width:', self.spn_ts_w)
+
+        self.spn_ts_h = QDoubleSpinBox()
+        self.spn_ts_h.setRange(0.0, 1e4)
+        self.spn_ts_h.setDecimals(2)
+        self.spn_ts_h.setSuffix(' in')
+        self.spn_ts_h.setValue(cfg.get('test_section_height_in', 0.0))
+        geom_layout.addRow('Test section height:', self.spn_ts_h)
+
+        self.spn_ref_area = QDoubleSpinBox()
+        self.spn_ref_area.setRange(0.0, 1e7)
+        self.spn_ref_area.setDecimals(2)
+        self.spn_ref_area.setSuffix(' in^2')
+        self.spn_ref_area.setValue(cfg.get('reference_area_in2', 1.0))
+        geom_layout.addRow('Wing reference area S:', self.spn_ref_area)
+
+        layout.addWidget(self.geom_group)
+
+        # Pope coefficients (generic)
+        self.pope_group = QGroupBox('Pope-Harper coefficients (generic)')
+        pope_layout = QFormLayout(self.pope_group)
+        self.spn_lambda = QDoubleSpinBox()
+        self.spn_lambda.setRange(0.0, 10.0)
+        self.spn_lambda.setDecimals(4)
+        self.spn_lambda.setValue(cfg.get('lambda_', 1.0))
+        pope_layout.addRow('lambda:', self.spn_lambda)
+
+        self.spn_k = QDoubleSpinBox()
+        self.spn_k.setRange(0.0, 10.0)
+        self.spn_k.setDecimals(4)
+        self.spn_k.setValue(cfg.get('k', 0.333))
+        pope_layout.addRow('k:', self.spn_k)
+
+        self.spn_delta = QDoubleSpinBox()
+        self.spn_delta.setRange(0.0, 10.0)
+        self.spn_delta.setDecimals(4)
+        self.spn_delta.setValue(cfg.get('delta', 0.141))
+        pope_layout.addRow('delta:', self.spn_delta)
+
+        self.spn_sigma = QDoubleSpinBox()
+        self.spn_sigma.setRange(0.0, 10.0)
+        self.spn_sigma.setDecimals(4)
+        self.spn_sigma.setValue(cfg.get('sigma', 0.011))
+        pope_layout.addRow('sigma:', self.spn_sigma)
+
+        layout.addWidget(self.pope_group)
+
+        # Frontal area anchors (linear interp by alpha)
+        self.area_group = QGroupBox(
+            'Solid blockage frontal area (linear interp by alpha)')
+        area_layout = QFormLayout(self.area_group)
+        self.spn_alpha_lo = QDoubleSpinBox()
+        self.spn_alpha_lo.setRange(-90, 90)
+        self.spn_alpha_lo.setDecimals(2)
+        self.spn_alpha_lo.setSuffix(' deg')
+        self.spn_alpha_lo.setValue(
+            cfg.get('frontal_area_alpha_low_deg', 0.0))
+        area_layout.addRow('Low alpha:', self.spn_alpha_lo)
+
+        self.spn_area_lo = QDoubleSpinBox()
+        self.spn_area_lo.setRange(0.0, 1e6)
+        self.spn_area_lo.setDecimals(3)
+        self.spn_area_lo.setSuffix(' in^2')
+        self.spn_area_lo.setValue(
+            cfg.get('frontal_area_alpha_low_in2', 0.0))
+        area_layout.addRow('Frontal area at low alpha:', self.spn_area_lo)
+
+        self.spn_alpha_hi = QDoubleSpinBox()
+        self.spn_alpha_hi.setRange(-90, 90)
+        self.spn_alpha_hi.setDecimals(2)
+        self.spn_alpha_hi.setSuffix(' deg')
+        self.spn_alpha_hi.setValue(
+            cfg.get('frontal_area_alpha_high_deg', 20.0))
+        area_layout.addRow('High alpha:', self.spn_alpha_hi)
+
+        self.spn_area_hi = QDoubleSpinBox()
+        self.spn_area_hi.setRange(0.0, 1e6)
+        self.spn_area_hi.setDecimals(3)
+        self.spn_area_hi.setSuffix(' in^2')
+        self.spn_area_hi.setValue(
+            cfg.get('frontal_area_alpha_high_in2', 0.0))
+        area_layout.addRow('Frontal area at high alpha:', self.spn_area_hi)
+
+        layout.addWidget(self.area_group)
+
+        # OK / Cancel
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+        # Initial state
+        self._on_method_changed()
+
+    def _on_method_changed(self):
+        method = self.cmb_method.currentData()
+        descriptions = {
+            'none': 'No correction applied. Original CL, CD, alpha pass '
+                    'through unchanged.',
+            'pope_kirsten': 'Pope-Harper for the Kirsten Wind Tunnel with '
+                            'fixed coefficients lambda=1.0, k=0.333, '
+                            'delta=0.141, sigma=0.011.',
+            'pope_generic': 'Pope-Harper with user-supplied facility '
+                            'coefficients (see the field below).',
+            'maskell': "Maskell's correction for stalled / bluff bodies; "
+                       'requires test section area and wing reference '
+                       'area.',
+            'glauert_closed': 'Classical Glauert closed-section lift '
+                              'interference. Uses delta from the Pope '
+                              'coefficient block (default 0.125).',
+        }
+        self.lbl_description.setText(descriptions.get(method, ''))
+
+        # Enable/disable input groups based on method
+        is_pope_generic = (method == 'pope_generic')
+        is_pope_kirsten = (method == 'pope_kirsten')
+        is_pope = is_pope_generic or is_pope_kirsten
+        is_glauert = (method == 'glauert_closed')
+        is_maskell = (method == 'maskell')
+        any_method = method != 'none'
+
+        # Geometry block used by all non-none methods
+        self.geom_group.setEnabled(any_method)
+        # Pope coefficients only for generic Pope (kirsten is locked)
+        self.pope_group.setEnabled(is_pope_generic or is_glauert)
+        # Frontal area only relevant to Pope (solid blockage)
+        self.area_group.setEnabled(is_pope)
+
+    def get_config(self) -> dict:
+        """Return the configuration dict (JSON-serializable)."""
+        return {
+            'method': self.cmb_method.currentData(),
+            'test_section_area_in2': self.spn_ts_area.value(),
+            'test_section_width_in': self.spn_ts_w.value(),
+            'test_section_height_in': self.spn_ts_h.value(),
+            'reference_area_in2': self.spn_ref_area.value(),
+            'lambda_': self.spn_lambda.value(),
+            'k': self.spn_k.value(),
+            'delta': self.spn_delta.value(),
+            'sigma': self.spn_sigma.value(),
+            'frontal_area_alpha_low_deg': self.spn_alpha_lo.value(),
+            'frontal_area_alpha_low_in2': self.spn_area_lo.value(),
+            'frontal_area_alpha_high_deg': self.spn_alpha_hi.value(),
+            'frontal_area_alpha_high_in2': self.spn_area_hi.value(),
+        }
+
+
 class CalibrationDialog(QDialog):
     """
     Dialog for calibration settings.
