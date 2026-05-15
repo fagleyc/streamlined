@@ -209,37 +209,70 @@ def _compute_body_coeffs(row: Dict[str, float], ref_area_in2: float,
 
 
 def _format_row(row: Dict[str, float], body: Dict[str, float]) -> str:
-    """Format one TEST RUN data row as CSV."""
-    vals = [
-        row['Alpha'], row['Beta'], row['Ma'], row['Re'],
-        row['T0Stil_F'], row['Tinf_F'], row['a_fts'], row['Vinf_fts'],
-        row['p0Stil_psia'], row['pInf_psia'], row['qInf_psi'], row['pDiff_psi'],
-        row['N1'], row['N2'], row['N'],
-        row['Y1'], row['Y2'], row['Y'],
-        row['Ax'],
-        row['PiMom'], row['YaMom'], row['RoMom'],
-        body['CN'], body['CY'], body['CAx'], body['CAxBD'],
-        body['CPiMom'], body['CYaMom'], body['CRoMom'],
-        row['CLift'], row['CDrag'], row['LD'],
-        row['CPitchSh'], row['CYawSh'], row['CRollSh'],
+    """Format one TEST RUN data row as CSV.
+
+    Each column uses a precision tuned to match the legacy Reduce2
+    output, so any downstream parser that expects fixed decimal places
+    is satisfied.  The column order matches the COE [TEST RUN] header.
+    """
+    # Column-specific precisions (decimal places).  None = scientific.
+    cols = [
+        (row['Alpha'],        2),  # Alpha
+        (row['Beta'],         2),  # Beta
+        (row['Ma'],           4),  # Mach
+        (row['Re'],        'sci'), # Reynolds
+        (row['T0Stil_F'],     4),  # T0 stil [degF]
+        (row['Tinf_F'],       4),  # Tinf [degF]
+        (row['a_fts'],        4),  # speed of sound [ft/s]
+        (row['Vinf_fts'],     4),  # Vinf [ft/s]
+        (row['p0Stil_psia'],  4),  # P0 stil [psia]
+        (row['pInf_psia'],    4),  # pInf [psia]
+        (row['qInf_psi'],     4),  # qInf [psi]
+        (row['pDiff_psi'],    4),  # pDiff [psi]
+        (row['N1'],           4),  # N1 [lb]
+        (row['N2'],           4),  # N2 [lb]
+        (row['N'],            4),  # N [lb]
+        (row['Y1'],           4),  # Y1 [lb]
+        (row['Y2'],           4),  # Y2 [lb]
+        (row['Y'],            4),  # Y [lb]
+        (row['Ax'],           4),  # Ax [lb]
+        (row['PiMom'],        4),  # PiMom [in-lb]
+        (row['YaMom'],        4),  # YaMom [in-lb]
+        (row['RoMom'],        4),  # RoMom [in-lb]
+        (body['CN'],          4),  # CN
+        (body['CY'],          4),  # CY
+        (body['CAx'],         4),  # CAx
+        (body['CAxBD'],    'sci'), # CAxBD (legacy uses scientific)
+        (body['CPiMom'],      4),  # CPiMom
+        (body['CYaMom'],      4),  # CYaMom
+        (body['CRoMom'],      4),  # CRoMom
+        (row['CLift'],        4),  # CLift
+        (row['CDrag'],        4),  # CDrag
+        (row['LD'],           4),  # L/D
+        (row['CPitchSh'],     4),  # CPitchSh
+        (row['CYawSh'],       4),  # CYawSh
+        (row['CRollSh'],      4),  # CRollSh
     ]
-    return ', '.join(_fmt_num(v) for v in vals)
+    return ', '.join(_fmt_num(v, p) for v, p in cols)
 
 
-def _fmt_num(v: float) -> str:
-    """Format a number to match legacy Reduce2 output style."""
-    if v == 0.0:
-        return '0'
-    abs_v = abs(v)
-    # Scientific notation for very large (e.g. Reynolds) or
-    # very small values
-    if abs_v >= 1e4 or abs_v < 1e-4:
+def _fmt_num(v: float, precision=4) -> str:
+    """Format a number for the COE TEST RUN table.
+
+    Parameters
+    ----------
+    v : float
+        Value to format.
+    precision : int or 'sci'
+        Number of decimal places, or 'sci' for scientific notation
+        (NNN.NNNe+NN).  Use 'sci' for columns like Reynolds number
+        and CAxBD where the legacy file always uses scientific form.
+    """
+    if not np.isfinite(v):
+        return '0' + ('.' + '0' * precision if isinstance(precision, int) else '.000e+00')
+    if precision == 'sci':
         return f'{v:.3e}'
-    # Default: up to 4 decimal places, trim trailing zeros
-    s = f'{v:.4f}'
-    if '.' in s:
-        s = s.rstrip('0').rstrip('.')
-    return s
+    return f'{v:.{precision}f}'
 
 
 # -----------------------------------------------------------------------------
