@@ -23,6 +23,7 @@ _FORMATS = [
     ("Excel", "excel", "Excel Files (*.xlsx);;All Files (*.*)", False),
     ("HDF5", "hdf5", "HDF5 Files (*.h5 *.hdf5);;All Files (*.*)", True),
     ("MATLAB (.mat)", "mat", "MAT Files (*.mat);;All Files (*.*)", True),
+    ("COE (legacy Reduce2)", "coe", "", False),
 ]
 
 
@@ -136,15 +137,34 @@ class ExportDialog(QDialog):
         supports_extended = _FORMATS[idx][3]
         self.data_group.setEnabled(supports_extended)
 
+        # Update placeholder to clarify file-vs-directory for COE
+        fmt_key = self.cmb_format.currentData()
+        if fmt_key == 'coe':
+            self.txt_filepath.setPlaceholderText(
+                "Select output directory (one .COE file per case/beta)...")
+        else:
+            self.txt_filepath.setPlaceholderText("Select output file...")
+
         # Clear filepath when format changes
         self.txt_filepath.clear()
 
     def _browse(self):
-        """Open file save dialog."""
+        """Open file save dialog (or directory picker for COE)."""
         idx = self.cmb_format.currentIndex()
-        file_filter = _FORMATS[idx][2]
         fmt_name = _FORMATS[idx][0]
+        fmt_key = self.cmb_format.currentData()
 
+        if fmt_key == 'coe':
+            # COE is multi-file; choose a directory instead
+            out_dir = QFileDialog.getExistingDirectory(
+                self, "Export COE Files - choose output directory",
+                self._last_directory)
+            if out_dir:
+                self.txt_filepath.setText(out_dir)
+                self._last_directory = out_dir
+            return
+
+        file_filter = _FORMATS[idx][2]
         filepath, _ = QFileDialog.getSaveFileName(
             self, f"Export to {fmt_name}",
             self._last_directory, file_filter

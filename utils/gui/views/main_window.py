@@ -20,7 +20,10 @@ from .data_panel import DataPanel
 from .plot_panel import PlotPanel
 from .table_panel import TablePanel
 from .time_history_panel import TimeHistoryPanel
-from .dialogs import GeometryDialog, CalibrationDialog, AboutDialog, OutputUnitsDialog
+from .dialogs import (
+    GeometryDialog, CalibrationDialog, AboutDialog, OutputUnitsDialog,
+    TunnelCorrectionsDialog,
+)
 from ..widgets.export_dialog import ExportDialog
 from ..utils.themes import DarkTheme
 from ..utils.icons import Icons
@@ -177,6 +180,14 @@ class MainWindow(QMainWindow):
         self.action_output_units.setStatusTip("Set output unit system for display and export")
         self.action_output_units.triggered.connect(self._show_output_units_dialog)
         edit_menu.addAction(self.action_output_units)
+
+        self.action_tunnel_corrections = QAction(
+            "&Tunnel Corrections...", self)
+        self.action_tunnel_corrections.setStatusTip(
+            "Configure blockage / wall-effect corrections")
+        self.action_tunnel_corrections.triggered.connect(
+            self._show_tunnel_corrections_dialog)
+        edit_menu.addAction(self.action_tunnel_corrections)
 
         edit_menu.addSeparator()
 
@@ -406,6 +417,21 @@ class MainWindow(QMainWindow):
             units = dialog.get_units()
             self.model.set_output_units(units)
             self.set_status(f"Output units set to {units}")
+
+    def _show_tunnel_corrections_dialog(self):
+        """Show tunnel-blockage / wall-effect correction settings."""
+        current = getattr(self.model, 'blockage_config', {'method': 'none'})
+        dialog = TunnelCorrectionsDialog(self, current_config=current)
+        if dialog.exec():
+            cfg = dialog.get_config()
+            self.model.blockage_config = cfg
+            method = cfg.get('method', 'none')
+            try:
+                from utils.windtunnel.blockage import METHOD_LABELS
+                label = METHOD_LABELS.get(method, method)
+            except Exception:
+                label = method
+            self.set_status(f"Tunnel corrections: {label}")
 
     def _on_geometry_assigned(self, case_id: str, geometry_name: str):
         """Handle geometry assignment to a case -- auto re-processes."""

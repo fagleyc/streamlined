@@ -118,6 +118,13 @@ class DataModel(QObject):
         self.pdiff_channel: str = "220"
         self.p0_channel: str = "690"
 
+        # Tunnel blockage / wall-effect correction configuration.
+        # Stored as a plain dict for trivial JSON round-tripping; the
+        # blockage module reconstructs a BlockageConfig dataclass from
+        # it on demand.  Default 'none' preserves backward-compatible
+        # behavior.
+        self.blockage_config: dict = {'method': 'none'}
+
         # Filter state
         self.filters = FilterState()
 

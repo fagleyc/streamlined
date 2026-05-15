@@ -937,8 +937,81 @@ class DataController(QObject):
         """Load and process data from a single directory (legacy support)."""
         self.load_data_directories([directory])
 
+    def _apply_blockage_to_case(self, case: TestCase) -> None:
+        """
+        Compute blockage-corrected arrays for a case based on the
+        current model.blockage_config.  If the method is 'none' or
+        the config is missing, the corrected arrays are cleared so the
+        uncorrected fields remain primary.
+
+        Safe to call multiple times (idempotent).
+        """
+        if not case.has_data:
+            return
+        cfg_dict = getattr(self.model, 'blockage_config', None) or {}
+        method = cfg_dict.get('method', 'none')
+        if method == 'none':
+            case.alphas_corr = np.array([])
+            case.Cl_corr = np.array([])
+            case.Cd_corr = np.array([])
+            case.blockage_epsilon = np.array([])
+            case.blockage_method = 'none'
+            return
+
+        try:
+            from utils.windtunnel.blockage import (
+                BlockageConfig, apply_blockage_correction)
+        except Exception:
+            return
+
+        cfg = BlockageConfig(
+            method=method,
+            test_section_area_in2=cfg_dict.get(
+                'test_section_area_in2', 0.0),
+            test_section_width_in=cfg_dict.get(
+                'test_section_width_in', 0.0),
+            test_section_height_in=cfg_dict.get(
+                'test_section_height_in', 0.0),
+            lambda_=cfg_dict.get('lambda_', 1.0),
+            k=cfg_dict.get('k', 0.333),
+            delta=cfg_dict.get('delta', 0.141),
+            sigma=cfg_dict.get('sigma', 0.011),
+            frontal_area_alpha_low_in2=cfg_dict.get(
+                'frontal_area_alpha_low_in2', 0.0),
+            frontal_area_alpha_low_deg=cfg_dict.get(
+                'frontal_area_alpha_low_deg', 0.0),
+            frontal_area_alpha_high_in2=cfg_dict.get(
+                'frontal_area_alpha_high_in2', 0.0),
+            frontal_area_alpha_high_deg=cfg_dict.get(
+                'frontal_area_alpha_high_deg', 0.0),
+            reference_area_in2=cfg_dict.get(
+                'reference_area_in2',
+                self.model.get_geometry(
+                    self.model.default_geometry).get('ref_area', 1.0)),
+        )
+
+        # Flatten arrays for the correction (works for 1D and 2D)
+        alphas_flat = np.asarray(case.alphas, dtype=float).ravel()
+        Cl_flat = np.asarray(case.Cl, dtype=float).ravel()
+        Cd_flat = np.asarray(case.Cd, dtype=float).ravel()
+        try:
+            result = apply_blockage_correction(
+                alphas_flat, Cl_flat, Cd_flat, cfg)
+        except Exception:
+            return
+
+        # Reshape back to original shape
+        orig_shape = case.alphas.shape
+        case.alphas_corr = result.alpha_corrected_deg.reshape(orig_shape)
+        case.Cl_corr = result.Cl_corrected.reshape(orig_shape)
+        case.Cd_corr = result.Cd_corrected.reshape(orig_shape)
+        case.blockage_epsilon = result.epsilon.reshape(orig_shape)
+        case.blockage_method = result.method
+
     def _on_case_ready(self, case: TestCase):
         """Handle a processed case."""
+        # Apply blockage corrections (if enabled) before adding to model
+        self._apply_blockage_to_case(case)
         self.model.add_case(case)
 
     def process_data(self):
@@ -1024,6 +1097,9 @@ class DataController(QObject):
             case.CRoll_std = ss.CRoll_std
             case.CPitch_std = ss.CPitch_std
             case.CYaw_std = ss.CYaw_std
+
+            # Re-apply blockage correction (if any) with refreshed data
+            self._apply_blockage_to_case(case)
 
             self.model.case_updated.emit(case_id)
             self.model.cases_changed.emit()
@@ -1332,6 +1408,8 @@ class DataController(QObject):
                     'pdiff_channel': self.model.pdiff_channel,
                     'p0_channel': self.model.p0_channel,
                 },
+                'blockage': getattr(
+                    self.model, 'blockage_config', {'method': 'none'}),
                 'directories': {
                     'last_data': self.settings.last_data_directory,
                     'last_calibration': self.settings.last_calibration_directory,
@@ -1466,6 +1544,10 @@ class DataController(QObject):
             self.model.balance_config = fac_config.get('balance_config', 'Force')
             self.model.pdiff_channel = fac_config.get('pdiff_channel', '220')
             self.model.p0_channel = fac_config.get('p0_channel', '690')
+
+            # Tunnel blockage / wall-effect configuration
+            self.model.blockage_config = config.get(
+                'blockage', {'method': 'none'})
 
             # Load directories
             dir_config = config.get('directories', {})
