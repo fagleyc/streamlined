@@ -29,6 +29,13 @@ class PlotType(Enum):
     CY_VS_ALPHA = auto()       # Side force vs alpha
     CROLL_VS_ALPHA = auto()    # Roll moment vs alpha
     CYAW_VS_ALPHA = auto()     # Yaw moment vs alpha
+    # Stability derivatives (central-difference, per deg)
+    CMA_VS_ALPHA = auto()      # dCm/dalpha
+    CLA_VS_ALPHA = auto()      # dCL/dalpha
+    SM_VS_ALPHA = auto()       # static margin -Cma/CLa
+    CYB_VS_ALPHA = auto()      # dCY/dbeta
+    CNB_VS_ALPHA = auto()      # dCn/dbeta
+    CLB_VS_ALPHA = auto()      # dCl/dbeta
     CUSTOM = auto()
 
 
@@ -223,6 +230,19 @@ class DataModel(QObject):
             PlotType.CY_VS_ALPHA: ("Alpha", "Cs", r"$\alpha$ [deg]", r"$C_Y$"),
             PlotType.CROLL_VS_ALPHA: ("Alpha", "CRoll", r"$\alpha$ [deg]", r"$C_l$"),
             PlotType.CYAW_VS_ALPHA: ("Alpha", "CYaw", r"$\alpha$ [deg]", r"$C_n$"),
+            # Stability derivatives
+            PlotType.CMA_VS_ALPHA: ("Alpha", "Cma", r"$\alpha$ [deg]",
+                                    r"$C_{m\alpha}$ [1/deg]"),
+            PlotType.CLA_VS_ALPHA: ("Alpha", "CLa", r"$\alpha$ [deg]",
+                                    r"$C_{L\alpha}$ [1/deg]"),
+            PlotType.SM_VS_ALPHA: ("Alpha", "StaticMargin",
+                                   r"$\alpha$ [deg]", "Static Margin"),
+            PlotType.CYB_VS_ALPHA: ("Alpha", "CYb", r"$\alpha$ [deg]",
+                                    r"$C_{Y\beta}$ [1/deg]"),
+            PlotType.CNB_VS_ALPHA: ("Alpha", "Cnb", r"$\alpha$ [deg]",
+                                    r"$C_{n\beta}$ [1/deg]"),
+            PlotType.CLB_VS_ALPHA: ("Alpha", "Clb", r"$\alpha$ [deg]",
+                                    r"$C_{l\beta}$ [1/deg]"),
         }
 
         if plot_type in type_configs:
