@@ -697,6 +697,26 @@ class AboutDialog(QDialog):
             </ul>
 
             <h3>Changelog</h3>
+            <p><b>v1.2.6</b></p>
+            <ul>
+                <li>Stability derivative plots (Cma, CLa, Static Margin,
+                    CYb, Cnb, Clb) via central finite differences</li>
+                <li>Selectable blockage corrections (Pope-Harper for the
+                    Kirsten Wind Tunnel, generic Pope-Harper, Maskell,
+                    Glauert closed-section) accessible from
+                    Edit &rarr; Tunnel Corrections...</li>
+                <li>COE export (legacy Reduce2 format) with byte-uniform
+                    fixed-width decimal formatting; one .COE file per
+                    case per unique beta</li>
+                <li>Standalone <code>coe_postprocess.py</code> script
+                    that loads .COE files and produces the same plot
+                    suite as the legacy spreadsheet (Cma, Static
+                    Margin, beta-derivatives, blockage overlays) with
+                    no Excel / ActiveX / macro dependency</li>
+                <li>COE reader module (<code>utils/windtunnel/coe_reader.py</code>)
+                    for round-tripping reduced data through the legacy
+                    file format</li>
+            </ul>
             <p><b>v1.2.5</b></p>
             <ul>
                 <li>Auto-detect thermocouple calibration vintage per sample:
