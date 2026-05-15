@@ -10,7 +10,7 @@ from pathlib import Path
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGroupBox, QCheckBox,
     QComboBox, QLabel, QPushButton, QLineEdit, QFileDialog,
-    QGridLayout, QDialogButtonBox
+    QGridLayout, QDialogButtonBox, QToolButton, QFrame, QWidget
 )
 from PyQt6.QtCore import Qt
 
@@ -18,11 +18,13 @@ from ..utils.themes import DarkTheme
 
 
 # Format definitions: (display name, key, file filter, supports extended)
+# Order chosen for usability: most common scientific formats first,
+# legacy COE last.
 _FORMATS = [
-    ("CSV", "csv", "CSV Files (*.csv);;All Files (*.*)", False),
     ("Excel", "excel", "Excel Files (*.xlsx);;All Files (*.*)", False),
-    ("HDF5", "hdf5", "HDF5 Files (*.h5 *.hdf5);;All Files (*.*)", True),
     ("MATLAB (.mat)", "mat", "MAT Files (*.mat);;All Files (*.*)", True),
+    ("HDF5", "hdf5", "HDF5 Files (*.h5 *.hdf5);;All Files (*.*)", True),
+    ("CSV", "csv", "CSV Files (*.csv);;All Files (*.*)", False),
     ("COE (legacy Reduce2)", "coe", "", False),
 ]
 
@@ -68,9 +70,25 @@ class ExportDialog(QDialog):
         case_layout.addWidget(self.cmb_cases, stretch=1)
         layout.addLayout(case_layout)
 
-        # --- Data options (HDF5/MAT only) ---
-        self.data_group = QGroupBox("Data to Include")
-        data_layout = QGridLayout(self.data_group)
+        # --- Advanced (collapsible): Data to Include (HDF5/MAT only) ---
+        # Toggle button shows / hides the inner widget.  Collapsed by
+        # default so the dialog stays compact for everyday export.
+        self.btn_advanced = QToolButton()
+        self.btn_advanced.setText("Advanced - Data to Include")
+        self.btn_advanced.setToolButtonStyle(
+            Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.btn_advanced.setArrowType(Qt.ArrowType.RightArrow)
+        self.btn_advanced.setCheckable(True)
+        self.btn_advanced.setChecked(False)
+        self.btn_advanced.setStyleSheet(
+            'QToolButton { border: none; font-weight: bold; }')
+        self.btn_advanced.toggled.connect(self._on_advanced_toggled)
+        layout.addWidget(self.btn_advanced)
+
+        self.advanced_panel = QFrame()
+        self.advanced_panel.setFrameShape(QFrame.Shape.StyledPanel)
+        data_layout = QGridLayout(self.advanced_panel)
+        data_layout.setContentsMargins(12, 8, 12, 8)
 
         self.chk_averaged = QCheckBox("Averaged Coefficients / Forces")
         self.chk_averaged.setChecked(True)
@@ -105,7 +123,8 @@ class ExportDialog(QDialog):
         self.chk_elements.setChecked(False)
         data_layout.addWidget(self.chk_elements, 3, 1)
 
-        layout.addWidget(self.data_group)
+        self.advanced_panel.setVisible(False)
+        layout.addWidget(self.advanced_panel)
 
         # --- File path ---
         path_layout = QHBoxLayout()
@@ -131,11 +150,25 @@ class ExportDialog(QDialog):
         # Initial state
         self._on_format_changed()
 
+    def _on_advanced_toggled(self, checked: bool):
+        """Show / hide the Advanced data-to-include panel."""
+        self.advanced_panel.setVisible(checked)
+        self.btn_advanced.setArrowType(
+            Qt.ArrowType.DownArrow if checked else Qt.ArrowType.RightArrow)
+        # Force the dialog to resize to fit the new content
+        self.adjustSize()
+
     def _on_format_changed(self):
         """Enable/disable extended data options based on format."""
         idx = self.cmb_format.currentIndex()
         supports_extended = _FORMATS[idx][3]
-        self.data_group.setEnabled(supports_extended)
+
+        # Advanced toggle and panel only meaningful for formats that
+        # support extended data (HDF5 / MATLAB).
+        self.btn_advanced.setEnabled(supports_extended)
+        self.advanced_panel.setEnabled(supports_extended)
+        if not supports_extended and self.btn_advanced.isChecked():
+            self.btn_advanced.setChecked(False)
 
         # Update placeholder to clarify file-vs-directory for COE
         fmt_key = self.cmb_format.currentData()

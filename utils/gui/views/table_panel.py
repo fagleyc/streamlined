@@ -271,28 +271,7 @@ class TablePanel(QWidget):
         self.chk_tunnel_conditions.stateChanged.connect(self._update_table)
         toolbar_layout.addWidget(self.chk_tunnel_conditions)
 
-        toolbar_layout.addSpacing(16)
-
-        # Export button
-        self.btn_export_csv = QPushButton("Export CSV")
-        self.btn_export_csv.setIcon(Icons.export())
-        self.btn_export_csv.clicked.connect(self._export_csv)
-        toolbar_layout.addWidget(self.btn_export_csv)
-
-        self.btn_export_excel = QPushButton("Export Excel")
-        self.btn_export_excel.setIcon(Icons.export())
-        self.btn_export_excel.clicked.connect(self._export_excel)
-        toolbar_layout.addWidget(self.btn_export_excel)
-
-        self.btn_export_hdf5 = QPushButton("Export HDF5")
-        self.btn_export_hdf5.setIcon(Icons.export())
-        self.btn_export_hdf5.clicked.connect(self._export_hdf5)
-        toolbar_layout.addWidget(self.btn_export_hdf5)
-
-        self.btn_export_mat = QPushButton("Export MAT")
-        self.btn_export_mat.setIcon(Icons.export())
-        self.btn_export_mat.clicked.connect(self._export_mat)
-        toolbar_layout.addWidget(self.btn_export_mat)
+        # (Export buttons removed - use File > Export... instead.)
 
         toolbar_layout.addSpacing(16)
 

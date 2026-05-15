@@ -385,7 +385,8 @@ class TunnelCorrectionsDialog(QDialog):
             f'color: {DarkTheme.TEXT_SECONDARY}; font-style: italic;')
         layout.addWidget(self.lbl_description)
 
-        # Test section geometry
+        # Test section geometry.  Defaults reflect the SWT (subsonic wind
+        # tunnel): 36" x 36" cross-section, area = 1296 in^2.
         self.geom_group = QGroupBox('Test Section / Reference')
         geom_layout = QFormLayout(self.geom_group)
 
@@ -394,21 +395,21 @@ class TunnelCorrectionsDialog(QDialog):
         self.spn_ts_area.setDecimals(2)
         self.spn_ts_area.setSuffix(' in^2')
         self.spn_ts_area.setValue(
-            cfg.get('test_section_area_in2', 0.0))
+            cfg.get('test_section_area_in2', 1296.0))
         geom_layout.addRow('Test section area:', self.spn_ts_area)
 
         self.spn_ts_w = QDoubleSpinBox()
         self.spn_ts_w.setRange(0.0, 1e4)
         self.spn_ts_w.setDecimals(2)
         self.spn_ts_w.setSuffix(' in')
-        self.spn_ts_w.setValue(cfg.get('test_section_width_in', 0.0))
+        self.spn_ts_w.setValue(cfg.get('test_section_width_in', 36.0))
         geom_layout.addRow('Test section width:', self.spn_ts_w)
 
         self.spn_ts_h = QDoubleSpinBox()
         self.spn_ts_h.setRange(0.0, 1e4)
         self.spn_ts_h.setDecimals(2)
         self.spn_ts_h.setSuffix(' in')
-        self.spn_ts_h.setValue(cfg.get('test_section_height_in', 0.0))
+        self.spn_ts_h.setValue(cfg.get('test_section_height_in', 36.0))
         geom_layout.addRow('Test section height:', self.spn_ts_h)
 
         self.spn_ref_area = QDoubleSpinBox()
