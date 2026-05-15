@@ -388,6 +388,11 @@ class MainWindow(QMainWindow):
 
     def _show_geometry_dialog(self):
         """Show multi-geometry settings dialog."""
+        # Snapshot the existing geometries so we can detect what changed
+        old_geos = {
+            name: dict(g) for name, g in self.model.geometries.items()
+        }
+
         dialog = GeometryDialog(self, geometries=self.model.geometries)
 
         if dialog.exec():
@@ -405,8 +410,31 @@ class MainWindow(QMainWindow):
                 default_geo.get('ref_area', 1.0),
                 default_geo.get('units', 'IPS')
             )
-            self.set_status(
-                f"Geometries updated: {len(new_geos)} definition(s)")
+
+            # Determine which geometry names changed (so we can re-reduce
+            # cases that use them).  A geometry "changed" if any reference
+            # value (mac, ref_area, span, mrc, units) differs.
+            changed_names = set()
+            for name, new_def in new_geos.items():
+                old_def = old_geos.get(name)
+                if old_def is None or old_def != new_def:
+                    changed_names.add(name)
+
+            # Re-reduce any case assigned to a changed geometry
+            n_reprocessed = 0
+            if changed_names and hasattr(self, 'data_controller'):
+                for case in list(self.model.cases):
+                    if not case.has_data:
+                        continue
+                    geo_name = self.model.get_geometry_name_for_case(case.id)
+                    if geo_name in changed_names:
+                        self.data_controller.reprocess_case(case.id)
+                        n_reprocessed += 1
+
+            msg = f"Geometries updated: {len(new_geos)} definition(s)"
+            if n_reprocessed:
+                msg += f", re-reduced {n_reprocessed} case(s)"
+            self.set_status(msg)
             self.plot_panel._update_plot()
 
     def _show_output_units_dialog(self):

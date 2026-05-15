@@ -46,3 +46,7 @@ IndividualElevons_NoInteractions_GearOff/
 
 # Local scratch directories
 Config*/
+
+# Generated plot output directories
+brandt/*_plots/
+brandt/*plots/

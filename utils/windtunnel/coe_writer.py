@@ -450,11 +450,15 @@ def write_coe_files(case, output_dir: str,
             rows.append((row, body))
         rows.sort(key=lambda rb: rb[0]['Alpha'])
 
-        # Build filename and full path
-        if len(beta_groups) == 1 and beta_int == 0:
-            fname = f'{safe_name}.COE'
+        # Build filename and full path.  Always include the beta tag
+        # so multi-file exports are self-describing and consistent with
+        # the legacy Reduce2 convention (e.g. case_b0.COE, case_b10.COE,
+        # case_b-5.COE).
+        if beta_int < 0:
+            beta_tag = f'_b{beta_int}'  # e.g. _b-5
         else:
-            fname = f'{safe_name}_B{beta_int}.COE'
+            beta_tag = f'_b{beta_int}'  # e.g. _b0, _b10
+        fname = f'{safe_name}{beta_tag}.COE'
         full_path = out_dir / fname
 
         # Build header (single beta value for this file)
