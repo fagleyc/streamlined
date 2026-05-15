@@ -310,6 +310,13 @@ class PlotPanel(QWidget):
             PlotType.CY_VS_ALPHA: ("Alpha", "Cs"),
             PlotType.CROLL_VS_ALPHA: ("Alpha", "CRoll"),
             PlotType.CYAW_VS_ALPHA: ("Alpha", "CYaw"),
+            # Stability derivatives (central-difference, per deg)
+            PlotType.CMA_VS_ALPHA: ("Alpha", "Cma"),
+            PlotType.CLA_VS_ALPHA: ("Alpha", "CLa"),
+            PlotType.SM_VS_ALPHA: ("Alpha", "StaticMargin"),
+            PlotType.CYB_VS_ALPHA: ("Alpha", "CYb"),
+            PlotType.CNB_VS_ALPHA: ("Alpha", "Cnb"),
+            PlotType.CLB_VS_ALPHA: ("Alpha", "Clb"),
         }
         return var_map.get(plot_type, ("Alpha", "Cl"))
 
@@ -605,6 +612,16 @@ class PlotPanel(QWidget):
                                 x_data, y_data - y_std,
                                 y_data + y_std, color=case.color)
 
+    def _resolve_derivative(self, case: TestCase, var: str) -> Optional[np.ndarray]:
+        """Return the full derivative array for `var`, or None if not a derivative."""
+        try:
+            from utils.windtunnel.derivatives import is_derivative, get_derivative
+        except Exception:
+            return None
+        if not is_derivative(var):
+            return None
+        return get_derivative(case, var)
+
     def _get_var_data(self, case: TestCase, sweep_data: Optional[dict],
                       var: str) -> np.ndarray:
         """Get data for a variable."""
@@ -615,6 +632,11 @@ class PlotPanel(QWidget):
                 return case.Cl / np.maximum(case.Cd, 1e-10)
         if var == "Lateral":
             var = "Cs"
+
+        # Derivatives are computed on demand from the case data
+        deriv = self._resolve_derivative(case, var)
+        if deriv is not None:
+            return deriv
 
         if sweep_data and var.lower() in sweep_data:
             return sweep_data[var.lower()]
@@ -630,6 +652,12 @@ class PlotPanel(QWidget):
         if var == "Lateral":
             var = "Cs"
 
+        deriv = self._resolve_derivative(case, var)
+        if deriv is not None:
+            if deriv.ndim == 2:
+                return deriv[:, col]
+            return deriv
+
         data = case.get_coefficient(var)
         if data.ndim == 2:
             return data[:, col]
@@ -641,6 +669,12 @@ class PlotPanel(QWidget):
             return case.Cl[row, :] / np.maximum(case.Cd[row, :], 1e-10)
         if var == "Lateral":
             var = "Cs"
+
+        deriv = self._resolve_derivative(case, var)
+        if deriv is not None:
+            if deriv.ndim == 2:
+                return deriv[row, :]
+            return deriv
 
         data = case.get_coefficient(var)
         if data.ndim == 2:
@@ -656,6 +690,10 @@ class PlotPanel(QWidget):
             return cl / np.maximum(cd, 1e-10)
         if var == "Lateral":
             var = "Cs"
+
+        deriv = self._resolve_derivative(case, var)
+        if deriv is not None:
+            return deriv.flatten()[mask]
 
         data = case.get_coefficient(var)
         return data.flatten()[mask]

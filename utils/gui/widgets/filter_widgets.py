@@ -353,6 +353,19 @@ class PlotTypeSelector(QWidget):
         ("Cl (roll) vs Alpha", "CROLL_VS_ALPHA", "Rolling moment vs angle of attack"),
         ("Cn (yaw) vs Alpha", "CYAW_VS_ALPHA", "Yawing moment vs angle of attack"),
         ("Lateral", "LATERAL_VS_BETA", "Lateral-directional coefficients"),
+        # Stability derivatives (central-difference)
+        ("Cma vs Alpha", "CMA_VS_ALPHA",
+         "Longitudinal stability slope dCm/dalpha (central diff)"),
+        ("CLa vs Alpha", "CLA_VS_ALPHA",
+         "Lift curve slope dCL/dalpha (central diff)"),
+        ("Static Margin vs Alpha", "SM_VS_ALPHA",
+         "Static margin -Cma/CLa"),
+        ("CYb vs Alpha", "CYB_VS_ALPHA",
+         "Side-force derivative dCY/dbeta (requires >= 2 betas)"),
+        ("Cnb vs Alpha", "CNB_VS_ALPHA",
+         "Directional stability dCn/dbeta (requires >= 2 betas)"),
+        ("Clb vs Alpha", "CLB_VS_ALPHA",
+         "Lateral stability dCl/dbeta (requires >= 2 betas)"),
     ]
 
     def __init__(self, parent=None):
