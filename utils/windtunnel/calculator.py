@@ -374,6 +374,111 @@ def available_variables(case) -> List[str]:
     return sorted(ns.keys())
 
 
+# Categorization for the UI variable picker.  Each entry is
+# (category_name, predicate).  The first matching category wins.
+_TUNNEL_NAMES = {
+    'Q', 'q', 'q_psi', 'q_pa', 'Q_mks',
+    'p0', 'P0', 'P_tot', 'p_static', 'P_static', 'p_inf',
+    'q_inf', 'T0', 'T', 'T_static',
+    'U_inf', 'U', 'Mach', 'M', 'Re', 'a', 'sound_speed',
+    'rho', 'density',
+}
+_BRF_NAMES = {'Fx', 'Fy', 'Fz', 'Mx', 'My', 'Mz'}
+_WRF_NAMES = {'Lift', 'Drag', 'Side', 'Roll_W', 'Pitch_W', 'Yaw_W'}
+_COEFF_NAMES = {'Cl', 'Cd', 'Cs', 'CRoll', 'CPitch', 'CYaw'}
+_CONSTANTS = {'pi', 'e'}
+
+
+def categorize_variables(names: List[str]) -> Dict[str, List[str]]:
+    """
+    Group variable names into UI categories so the dialog picker is
+    easy to navigate even when 40+ pressure ports are present.
+
+    Returns dict[category_name -> sorted list of names].
+    Categories: 'Pressure Ports', 'Balance Channels',
+    'Tunnel Conditions', 'BRF Forces', 'WRF Forces',
+    'Coefficients', 'Position / Time', 'Constants', 'Other'.
+    """
+    result: Dict[str, List[str]] = {
+        'Pressure Ports': [],
+        'Balance Channels': [],
+        'Tunnel Conditions': [],
+        'BRF Forces': [],
+        'WRF Forces': [],
+        'Coefficients': [],
+        'Position / Time': [],
+        'Constants': [],
+        'Other': [],
+    }
+
+    pressure_port_re = re.compile(r'^P\d+$', re.IGNORECASE)
+    bal_chan_names = {
+        'N1', 'N2', 'Y1', 'Y2', 'Axial', 'Roll', 'Excitation',
+        'AftPitch', 'AftYaw', 'FwdPitch', 'FwdYaw',
+        'Pdiff', 'Ptot', 'Temp',
+    }
+    pos_time_names = {'alpha', 'beta', 'time', 'Alpha', 'Beta', 'Time'}
+
+    for name in names:
+        if pressure_port_re.match(name) and name not in {'P0'}:
+            # P0 is total pressure (tunnel) - leave to that category
+            result['Pressure Ports'].append(name)
+        elif name in bal_chan_names:
+            result['Balance Channels'].append(name)
+        elif name in _TUNNEL_NAMES:
+            result['Tunnel Conditions'].append(name)
+        elif name in _BRF_NAMES:
+            result['BRF Forces'].append(name)
+        elif name in _WRF_NAMES:
+            result['WRF Forces'].append(name)
+        elif name in _COEFF_NAMES:
+            result['Coefficients'].append(name)
+        elif name in pos_time_names:
+            result['Position / Time'].append(name)
+        elif name in _CONSTANTS:
+            result['Constants'].append(name)
+        else:
+            result['Other'].append(name)
+
+    # Pressure ports sorted by numeric suffix so P1, P2, ..., P32 in order
+    def _press_key(s):
+        try:
+            return int(s[1:])
+        except ValueError:
+            return 1e9
+
+    result['Pressure Ports'].sort(key=_press_key)
+    for cat in result:
+        if cat != 'Pressure Ports':
+            result[cat].sort()
+
+    # Ensure pi / e always present even if dataset has no matches
+    if not result['Constants']:
+        result['Constants'] = ['pi', 'e']
+
+    # Drop empty categories EXCEPT Constants which we always keep
+    return {k: v for k, v in result.items() if v or k == 'Constants'}
+
+
+# Math / operator helpers for the UI button grid.  Each entry is
+# (display_label, insertion_text).  Brief and grouped left-to-right
+# in a horizontal toolbar.
+MATH_FUNCTIONS = [
+    ('sin', 'sin('), ('cos', 'cos('), ('tan', 'tan('),
+    ('asin', 'asin('), ('acos', 'acos('), ('atan', 'atan('),
+    ('exp', 'exp('), ('log', 'log('), ('log10', 'log10('),
+    ('sqrt', 'sqrt('), ('abs', 'abs('), ('sign', 'sign('),
+    ('mean', 'mean('), ('std', 'std('), ('clip', 'clip('),
+    ('where', 'where('), ('min', 'minimum('), ('max', 'maximum('),
+    ('pi', 'pi'), ('e', 'e'),
+]
+
+OPERATORS = [
+    ('+', ' + '), ('-', ' - '), ('*', ' * '), ('/', ' / '),
+    ('**', '**'), ('(', '('), (')', ')'), (',', ', '),
+]
+
+
 # ----------------------------------------------------------------------
 # Apply rules to a case
 # ----------------------------------------------------------------------

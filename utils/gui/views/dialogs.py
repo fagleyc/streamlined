@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
     QLabel, QLineEdit, QDoubleSpinBox, QComboBox, QPushButton,
     QDialogButtonBox, QFrame, QTextBrowser, QTabWidget, QWidget,
     QListWidget, QListWidgetItem, QFileDialog, QAbstractItemView,
-    QTreeView, QListView, QCheckBox
+    QTreeView, QListView, QCheckBox, QGridLayout
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
@@ -559,22 +559,29 @@ class CalculatorDialog(QDialog):
     Edit / manage user-defined calculator rules.
 
     Layout:
-      Left  - list of rules with checkboxes for enabled state and
-              Add / Remove / Duplicate buttons.
-      Right - form editor for the currently selected rule.
-              (name template, expression template, index var, range,
-               description), plus a Preview pane that shows the
-               expanded output names and a test evaluation against
-               the currently selected case.
+      Left  - list of rules with Add / Duplicate / Remove buttons.
+      Right - form editor for the currently selected rule with:
+              * Rule metadata (name, index var, range, description, enabled)
+              * Expression text field
+              * Variable picker (category dropdown + variable dropdown +
+                Insert button) so users don't have to remember names
+              * Math function and operator buttons that insert text
+                at the expression's cursor position
+              * Live preview (expanded outputs + test evaluation)
+              * Refresh button to re-scan available variables after
+                loading new data
     """
 
     def __init__(self, parent=None, rules=None,
-                 available_vars=None, preview_case=None):
+                 available_vars=None, preview_case=None,
+                 refresh_callback=None):
         super().__init__(parent)
         self.setWindowTitle('Custom Calculator')
-        self.setMinimumSize(820, 520)
+        self.setMinimumSize(940, 640)
         self._available_vars = list(available_vars or [])
         self._preview_case = preview_case
+        self._refresh_callback = refresh_callback
+        self._categorized = {}
 
         # Local copy of rules; only committed on accept
         from utils.windtunnel.calculator import CalcRule
@@ -583,6 +590,7 @@ class CalculatorDialog(QDialog):
         self._current_index: int = -1
         self._suppress_form_update = False
         self._setup_ui()
+        self._recompute_categories()
         if self._rules:
             self.list_widget.setCurrentRow(0)
 
@@ -603,10 +611,11 @@ class CalculatorDialog(QDialog):
     def _setup_ui(self):
         outer = QHBoxLayout(self)
 
-        # --- left: rule list ---
+        # --- LEFT: rule list ---
         left = QVBoxLayout()
         left.addWidget(QLabel('Rules:'))
         self.list_widget = QListWidget()
+        self.list_widget.setMinimumWidth(190)
         self.list_widget.currentRowChanged.connect(self._on_selection_changed)
         left.addWidget(self.list_widget, 1)
 
@@ -623,43 +632,116 @@ class CalculatorDialog(QDialog):
         left.addLayout(btn_row)
         outer.addLayout(left, 0)
 
-        # --- right: editor + preview ---
+        # --- RIGHT: editor + builder + preview ---
         right = QVBoxLayout()
 
-        editor_group = QGroupBox('Rule Editor')
-        form = QFormLayout(editor_group)
+        # Rule metadata - compact form at top
+        meta_group = QGroupBox('Rule Metadata')
+        meta_form = QFormLayout(meta_group)
+        meta_form.setVerticalSpacing(4)
 
         self.chk_enabled = QCheckBox('Enabled')
         self.chk_enabled.stateChanged.connect(self._on_form_changed)
-        form.addRow('', self.chk_enabled)
+        meta_form.addRow('', self.chk_enabled)
 
         self.txt_name = QLineEdit()
         self.txt_name.setPlaceholderText('Cp{i}')
         self.txt_name.textChanged.connect(self._on_form_changed)
-        form.addRow('Output name template:', self.txt_name)
+        meta_form.addRow('Output name template:', self.txt_name)
 
-        self.txt_expr = QLineEdit()
-        self.txt_expr.setPlaceholderText('(P{i} - p_inf) / q_inf')
-        self.txt_expr.textChanged.connect(self._on_form_changed)
-        form.addRow('Expression:', self.txt_expr)
-
+        idx_row = QHBoxLayout()
         self.txt_index_var = QLineEdit()
         self.txt_index_var.setPlaceholderText('i')
+        self.txt_index_var.setMaximumWidth(60)
         self.txt_index_var.textChanged.connect(self._on_form_changed)
-        form.addRow('Index variable:', self.txt_index_var)
-
+        idx_row.addWidget(self.txt_index_var)
+        idx_row.addWidget(QLabel('  Range:'))
         self.txt_range = QLineEdit()
         self.txt_range.setPlaceholderText(
             "1..32   or   1,5,10   or   auto:P{i}   or   blank")
         self.txt_range.textChanged.connect(self._on_form_changed)
-        form.addRow('Index range:', self.txt_range)
+        idx_row.addWidget(self.txt_range, 1)
+        idx_widget = QWidget()
+        idx_widget.setLayout(idx_row)
+        meta_form.addRow('Index variable:', idx_widget)
 
         self.txt_desc = QLineEdit()
         self.txt_desc.setPlaceholderText('Description (optional)')
         self.txt_desc.textChanged.connect(self._on_form_changed)
-        form.addRow('Description:', self.txt_desc)
+        meta_form.addRow('Description:', self.txt_desc)
 
-        right.addWidget(editor_group)
+        right.addWidget(meta_group)
+
+        # Expression builder
+        builder_group = QGroupBox('Expression Builder')
+        bv = QVBoxLayout(builder_group)
+        bv.setSpacing(6)
+
+        # Expression text field
+        expr_row = QHBoxLayout()
+        expr_row.addWidget(QLabel('Expression:'))
+        self.txt_expr = QLineEdit()
+        self.txt_expr.setPlaceholderText('(P{i} - p_inf) / q_inf')
+        self.txt_expr.textChanged.connect(self._on_form_changed)
+        expr_row.addWidget(self.txt_expr, 1)
+        bv.addLayout(expr_row)
+
+        # Variable picker
+        picker_row = QHBoxLayout()
+        picker_row.addWidget(QLabel('Insert variable:'))
+        self.cmb_category = QComboBox()
+        self.cmb_category.setMinimumWidth(140)
+        self.cmb_category.currentIndexChanged.connect(self._on_category_changed)
+        picker_row.addWidget(self.cmb_category)
+        self.cmb_variable = QComboBox()
+        self.cmb_variable.setMinimumWidth(140)
+        picker_row.addWidget(self.cmb_variable)
+        self.btn_insert_var = QPushButton('Insert')
+        self.btn_insert_var.clicked.connect(self._on_insert_variable)
+        picker_row.addWidget(self.btn_insert_var)
+        self.btn_refresh = QPushButton('Refresh')
+        self.btn_refresh.setToolTip(
+            'Re-scan available variables from the current case')
+        self.btn_refresh.clicked.connect(self._on_refresh_variables)
+        picker_row.addWidget(self.btn_refresh)
+        picker_row.addStretch(1)
+        bv.addLayout(picker_row)
+
+        # Math function buttons - two rows
+        from utils.windtunnel.calculator import MATH_FUNCTIONS, OPERATORS
+        math_label = QLabel('Math functions:')
+        math_label.setStyleSheet(
+            f'color: {DarkTheme.TEXT_SECONDARY}; font-size: 9pt;')
+        bv.addWidget(math_label)
+        math_grid = QGridLayout()
+        math_grid.setSpacing(2)
+        for idx, (lbl, txt) in enumerate(MATH_FUNCTIONS):
+            btn = QPushButton(lbl)
+            btn.setMaximumWidth(60)
+            btn.setStyleSheet('padding: 3px;')
+            btn.clicked.connect(
+                lambda checked=False, t=txt: self._insert_at_cursor(t))
+            math_grid.addWidget(btn, idx // 10, idx % 10)
+        bv.addLayout(math_grid)
+
+        # Operators
+        op_label = QLabel('Operators:')
+        op_label.setStyleSheet(
+            f'color: {DarkTheme.TEXT_SECONDARY}; font-size: 9pt;')
+        bv.addWidget(op_label)
+        op_row = QHBoxLayout()
+        op_row.setSpacing(2)
+        for lbl, txt in OPERATORS:
+            btn = QPushButton(lbl)
+            btn.setMaximumWidth(45)
+            btn.setStyleSheet('padding: 3px;')
+            btn.clicked.connect(
+                lambda checked=False, t=txt: self._insert_at_cursor(t))
+            op_row.addWidget(btn)
+        op_row.addStretch(1)
+        bv.addLayout(op_row)
+
+        right.addWidget(builder_group)
 
         # Preview pane
         prev_group = QGroupBox('Preview')
@@ -674,16 +756,11 @@ class CalculatorDialog(QDialog):
             f'color: {DarkTheme.TEXT_SECONDARY};')
         prev_layout.addWidget(self.lbl_eval)
 
-        if self._available_vars:
-            avail = ', '.join(self._available_vars[:50])
-            if len(self._available_vars) > 50:
-                avail += f'  (+{len(self._available_vars) - 50} more)'
-            self.lbl_available = QLabel(
-                f'Available variables: {avail}')
-            self.lbl_available.setWordWrap(True)
-            self.lbl_available.setStyleSheet(
-                f'color: {DarkTheme.TEXT_SECONDARY}; font-size: 9pt;')
-            prev_layout.addWidget(self.lbl_available)
+        self.lbl_diag = QLabel('')
+        self.lbl_diag.setWordWrap(True)
+        self.lbl_diag.setStyleSheet(
+            f'color: {DarkTheme.TEXT_SECONDARY}; font-size: 9pt;')
+        prev_layout.addWidget(self.lbl_diag)
 
         right.addWidget(prev_group, 1)
 
@@ -697,6 +774,83 @@ class CalculatorDialog(QDialog):
 
         outer.addLayout(right, 1)
         self._refresh_list()
+
+    # ------------------------------------------------------------------
+    # Variable picker logic
+    # ------------------------------------------------------------------
+
+    def _recompute_categories(self):
+        try:
+            from utils.windtunnel.calculator import categorize_variables
+            self._categorized = categorize_variables(self._available_vars)
+        except Exception:
+            self._categorized = {}
+
+        self.cmb_category.blockSignals(True)
+        self.cmb_category.clear()
+        for cat, names in self._categorized.items():
+            self.cmb_category.addItem(f'{cat}  ({len(names)})', cat)
+        self.cmb_category.blockSignals(False)
+        # Default to Pressure Ports if present, else first non-empty
+        target = None
+        for i in range(self.cmb_category.count()):
+            if self.cmb_category.itemData(i) == 'Pressure Ports':
+                target = i
+                break
+        if target is None and self.cmb_category.count() > 0:
+            target = 0
+        if target is not None:
+            self.cmb_category.setCurrentIndex(target)
+        self._on_category_changed()
+        self._update_diagnostic()
+
+    def _on_category_changed(self):
+        cat = self.cmb_category.currentData()
+        self.cmb_variable.blockSignals(True)
+        self.cmb_variable.clear()
+        names = self._categorized.get(cat, [])
+        for n in names:
+            self.cmb_variable.addItem(n, n)
+        self.cmb_variable.blockSignals(False)
+
+    def _on_insert_variable(self):
+        name = self.cmb_variable.currentData()
+        if not name:
+            return
+        self._insert_at_cursor(name)
+
+    def _insert_at_cursor(self, text: str):
+        # QLineEdit.insert() inserts at current cursor position
+        self.txt_expr.setFocus()
+        self.txt_expr.insert(text)
+
+    def _on_refresh_variables(self):
+        if self._refresh_callback is None:
+            return
+        try:
+            new_vars = list(self._refresh_callback() or [])
+        except Exception:
+            new_vars = []
+        self._available_vars = new_vars
+        self._recompute_categories()
+        # Re-evaluate preview against the (possibly newly-loaded) case
+        if (0 <= self._current_index < len(self._rules)):
+            self._update_preview(self._rules[self._current_index])
+
+    def _update_diagnostic(self):
+        """Show a friendly diagnostic when no/few variables are available."""
+        n = len(self._available_vars)
+        if n == 0:
+            self.lbl_diag.setText(
+                'No data loaded yet. Load a data directory and process '
+                'it, then click Refresh.')
+        elif n < 5:
+            self.lbl_diag.setText(
+                f'{n} variable(s) detected.  If pressure ports are '
+                'missing, the channels may be named differently in '
+                'the TDMS files (e.g. P_001 vs P1).')
+        else:
+            self.lbl_diag.setText(f'{n} variables available.')
 
     # ------------------------------------------------------------------
     # List management
