@@ -269,12 +269,21 @@ def build_namespace(pt) -> Dict[str, np.ndarray]:
     """
     Build the variable namespace for one ReducedDataPoint.
 
-    Exposes raw DAQ channels, tunnel conditions, BRF / WRF forces,
-    and aero coefficients as 1-D numpy arrays of length n_samples.
+    Order of precedence (FIRST wins, so user data is never clobbered):
+      1. Raw DAQ channels from pt.air_on (the user's actual data)
+      2. Position attributes (alpha, beta, time)
+      3. Tunnel-condition aliases (Q, p_inf, T0, Mach, ...) -
+         only added when the name is not already a raw channel
+      4. BRF / WRF force aliases - same precedence rule
+      5. Coefficient aliases - same precedence rule
+
+    The precedence rule fixes a class of bugs where a user has
+    pressure channels named e.g. 'p0', 'P0', or 'Q' that would
+    otherwise be overwritten by my tunnel-condition aliases.
     """
     ns: Dict[str, Any] = {}
 
-    # Raw DAQ channels (air_on dictionary)
+    # 1. Raw DAQ channels (highest priority - never gets overridden)
     if hasattr(pt, 'air_on') and isinstance(pt.air_on, dict):
         for key, val in pt.air_on.items():
             try:
@@ -282,8 +291,10 @@ def build_namespace(pt) -> Dict[str, np.ndarray]:
             except Exception:
                 pass
 
-    # Convenience: alpha, beta, time at top level
+    # 2. Convenience: alpha, beta, time at top level (don't clobber)
     for attr in ('alpha', 'beta', 'time'):
+        if attr in ns:
+            continue
         v = getattr(pt, attr, None)
         if v is not None:
             try:
@@ -291,26 +302,27 @@ def build_namespace(pt) -> Dict[str, np.ndarray]:
             except Exception:
                 pass
 
-    # Tunnel conditions
+    # 3. Tunnel conditions - alias only if name absent from raw data
     tc = getattr(pt, 'tunnel', None)
     if tc is not None:
-        # Both verbose and short aliases
         mappings = {
             'Q': 'Q', 'q': 'Q', 'q_psi': 'Q',
             'q_pa': 'Q_mks', 'Q_mks': 'Q_mks',
-            'p0': 'P_tot', 'P_tot': 'P_tot', 'P0': 'P_tot',
+            'P_tot': 'P_tot', 'Ptot_tunnel': 'P_tot',
             'p_static': 'P_static', 'P_static': 'P_static',
             'p_inf': 'P_static',
             'q_inf': 'Q',
             'T0': 'T0',
-            'T': 'T', 'T_static': 'T',
+            'T_static': 'T',
             'U_inf': 'U_inf', 'U': 'U_inf',
-            'Mach': 'Mach', 'M': 'Mach',
+            'Mach': 'Mach',
             'Re': 'Re',
             'a': 'a', 'sound_speed': 'a',
             'rho': 'rho', 'density': 'rho',
         }
         for alias, src in mappings.items():
+            if alias in ns:
+                continue  # Raw data wins
             v = getattr(tc, src, None)
             if v is not None and not (isinstance(v, np.ndarray)
                                        and v.size == 0):
@@ -319,10 +331,12 @@ def build_namespace(pt) -> Dict[str, np.ndarray]:
                 except Exception:
                     pass
 
-    # BRF aerodynamic forces (air-on minus mean air-off)
+    # 4. BRF aerodynamic forces (air-on minus mean air-off)
     brf_on = getattr(pt, 'brf_on', None)
     brf_off = getattr(pt, 'brf_off', None)
     for attr in ('Fx', 'Fy', 'Fz', 'Mx', 'My', 'Mz'):
+        if attr in ns:
+            continue
         if brf_on is not None:
             on_arr = getattr(brf_on, attr, None)
             if on_arr is not None and np.asarray(on_arr).size > 0:
@@ -333,21 +347,25 @@ def build_namespace(pt) -> Dict[str, np.ndarray]:
                         v = v - float(np.mean(off))
                 ns[attr] = v
 
-    # WRF forces (aerodynamic, already tare-subtracted)
+    # 5. WRF forces (aerodynamic, already tare-subtracted)
     wrf = getattr(pt, 'wrf_aero', None)
     if wrf is not None:
         for src, alias in [('Lift', 'Lift'), ('Drag', 'Drag'),
                             ('Side', 'Side'),
                             ('Roll', 'Roll_W'), ('Pitch', 'Pitch_W'),
                             ('Yaw', 'Yaw_W')]:
+            if alias in ns:
+                continue
             v = getattr(wrf, src, None)
             if v is not None and np.asarray(v).size > 0:
                 ns[alias] = np.asarray(v, dtype=float)
 
-    # Coefficient time-series
+    # 6. Coefficient time-series
     cf = getattr(pt, 'coeffs', None)
     if cf is not None:
         for attr in ('Cl', 'Cd', 'Cs', 'CRoll', 'CPitch', 'CYaw'):
+            if attr in ns:
+                continue
             v = getattr(cf, attr, None)
             if v is not None and np.asarray(v).size > 0:
                 ns[attr] = np.asarray(v, dtype=float)
@@ -420,8 +438,11 @@ def categorize_variables(names: List[str]) -> Dict[str, List[str]]:
     pos_time_names = {'alpha', 'beta', 'time', 'Alpha', 'Beta', 'Time'}
 
     for name in names:
-        if pressure_port_re.match(name) and name not in {'P0'}:
-            # P0 is total pressure (tunnel) - leave to that category
+        if pressure_port_re.match(name):
+            # P{n} / p{n} names are pressure ports.  Previously P0
+            # was excluded as a P_tot alias; build_namespace no
+            # longer adds that alias, so P0 / p0 here is always a
+            # real raw channel and belongs in Pressure Ports.
             result['Pressure Ports'].append(name)
         elif name in bal_chan_names:
             result['Balance Channels'].append(name)
