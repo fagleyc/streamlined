@@ -472,13 +472,26 @@ class MainWindow(QMainWindow):
                     preview_case = c
                     break
 
+        def _make_extra(case_obj):
+            """Build geometry scalars for the calculator namespace."""
+            if case_obj is None:
+                return {}
+            try:
+                from utils.windtunnel.calculator import geometry_scalars
+                geo = self.model.get_geometry_for_case(case_obj.id)
+                return geometry_scalars(geo)
+            except Exception:
+                return {}
+
         # Collect the variable names available for the preview case so
-        # the dialog can show them and auto-detect ranges.
+        # the dialog can show them and auto-detect ranges.  Include
+        # geometry scalars (MAC, span, ref_area, MRC_x/y/z).
         available = []
         if preview_case is not None:
             try:
                 from utils.windtunnel.calculator import available_variables
-                available = available_variables(preview_case)
+                available = available_variables(
+                    preview_case, extra_scalars=_make_extra(preview_case))
             except Exception:
                 available = []
 
@@ -491,7 +504,8 @@ class MainWindow(QMainWindow):
                     break
             try:
                 from utils.windtunnel.calculator import available_variables
-                return available_variables(case_now)
+                return available_variables(
+                    case_now, extra_scalars=_make_extra(case_now))
             except Exception:
                 return []
 

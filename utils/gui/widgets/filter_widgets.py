@@ -373,15 +373,19 @@ class PlotTypeSelector(QWidget):
         self._setup_ui()
 
     def _setup_ui(self):
-        layout = QHBoxLayout(self)
+        # 2-row grid: Plot Type on top, Custom Y below it so both
+        # combos line up under their respective labels.
+        from PyQt6.QtWidgets import QGridLayout
+        layout = QGridLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(8)
+        layout.setHorizontalSpacing(8)
+        layout.setVerticalSpacing(4)
 
         label = QLabel("Plot Type:")
-        layout.addWidget(label)
+        layout.addWidget(label, 0, 0)
 
         self.cmb_plot_type = QComboBox()
-        self.cmb_plot_type.setMinimumWidth(150)
+        self.cmb_plot_type.setMinimumWidth(180)
 
         for display_name, value, tooltip in self.PLOT_TYPES:
             self.cmb_plot_type.addItem(display_name, value)
@@ -389,19 +393,19 @@ class PlotTypeSelector(QWidget):
             self.cmb_plot_type.setItemData(idx, tooltip, Qt.ItemDataRole.ToolTipRole)
 
         self.cmb_plot_type.currentIndexChanged.connect(self._on_changed)
-        layout.addWidget(self.cmb_plot_type)
+        layout.addWidget(self.cmb_plot_type, 0, 1)
 
         # Custom Y override - when set, overrides the y variable from
         # the plot type.  Populated dynamically from active calculator
         # rules via populate_custom_vars().
-        layout.addSpacing(12)
         self.lbl_custom = QLabel("Custom Y:")
-        layout.addWidget(self.lbl_custom)
+        layout.addWidget(self.lbl_custom, 1, 0)
         self.cmb_custom_y = QComboBox()
-        self.cmb_custom_y.setMinimumWidth(120)
+        self.cmb_custom_y.setMinimumWidth(180)
         self.cmb_custom_y.addItem("(none)", "")
         self.cmb_custom_y.currentIndexChanged.connect(self._on_changed)
-        layout.addWidget(self.cmb_custom_y)
+        layout.addWidget(self.cmb_custom_y, 1, 1)
+        layout.setColumnStretch(1, 1)
 
     def _on_changed(self, index):
         value = self.cmb_plot_type.currentData()
