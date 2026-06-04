@@ -704,6 +704,12 @@ class CalculatorDialog(QDialog):
             'Re-scan available variables from the current case')
         self.btn_refresh.clicked.connect(self._on_refresh_variables)
         picker_row.addWidget(self.btn_refresh)
+        self.btn_browse_all = QPushButton('Browse All...')
+        self.btn_browse_all.setToolTip(
+            'Open a window listing every available variable with '
+            'its current sample value')
+        self.btn_browse_all.clicked.connect(self._show_variable_browser)
+        picker_row.addWidget(self.btn_browse_all)
         picker_row.addStretch(1)
         bv.addLayout(picker_row)
 
@@ -850,7 +856,109 @@ class CalculatorDialog(QDialog):
                 'missing, the channels may be named differently in '
                 'the TDMS files (e.g. P_001 vs P1).')
         else:
-            self.lbl_diag.setText(f'{n} variables available.')
+            self.lbl_diag.setText(
+                f'{n} variables available.  Click "Browse All..." to '
+                "see the full list with sample values.")
+
+    def _show_variable_browser(self):
+        """Open a dialog listing every available variable + sample mean."""
+        # Build a list of (category, name, sample_mean)
+        rows = []
+        try:
+            from utils.windtunnel.calculator import (
+                categorize_variables, build_namespace)
+        except Exception:
+            categorize_variables = None
+            build_namespace = None
+
+        ns = {}
+        if build_namespace is not None and self._preview_case is not None:
+            red = (getattr(self._preview_case.daq, 'red', None)
+                   if getattr(self._preview_case, 'daq', None) is not None
+                   else None)
+            if red:
+                try:
+                    ns = build_namespace(red[0])
+                except Exception:
+                    ns = {}
+
+        cats = (categorize_variables(self._available_vars)
+                if categorize_variables else {})
+        for cat, names in cats.items():
+            for n in names:
+                v = ns.get(n)
+                if v is None:
+                    sample = ''
+                else:
+                    try:
+                        arr = np.asarray(v, dtype=float)
+                        if arr.size == 0:
+                            sample = '(empty)'
+                        else:
+                            sample = f'{float(np.mean(arr)):.6g}'
+                    except Exception:
+                        sample = '(not numeric)'
+                rows.append((cat, n, sample))
+
+        # Create a modal dialog with a table
+        dlg = QDialog(self)
+        dlg.setWindowTitle('All Available Variables')
+        dlg.resize(560, 560)
+        v = QVBoxLayout(dlg)
+
+        filter_row = QHBoxLayout()
+        filter_row.addWidget(QLabel('Filter:'))
+        edt_filter = QLineEdit()
+        edt_filter.setPlaceholderText('Type to filter (substring match)...')
+        filter_row.addWidget(edt_filter, 1)
+        v.addLayout(filter_row)
+
+        lst = QListWidget()
+        lst.setAlternatingRowColors(True)
+
+        def _repopulate(txt=''):
+            txt_lower = (txt or '').lower()
+            lst.clear()
+            for cat, name, sample in rows:
+                if txt_lower and txt_lower not in name.lower() \
+                        and txt_lower not in cat.lower():
+                    continue
+                tail = f'  ({cat})' if cat else ''
+                if sample:
+                    text = f'{name:30s}  sample={sample}{tail}'
+                else:
+                    text = f'{name:30s}{tail}'
+                item = QListWidgetItem(text)
+                item.setData(Qt.ItemDataRole.UserRole, name)
+                lst.addItem(item)
+
+        edt_filter.textChanged.connect(_repopulate)
+        _repopulate()
+        v.addWidget(lst, 1)
+
+        # Double-click inserts and closes
+        def _on_double_click(item):
+            name = item.data(Qt.ItemDataRole.UserRole)
+            if name:
+                self._insert_at_cursor(name)
+                dlg.accept()
+        lst.itemDoubleClicked.connect(_on_double_click)
+
+        info = QLabel(
+            'Double-click a variable to insert it at the expression '
+            'cursor.  Use this to verify exact channel names if a rule '
+            'expansion is producing NaN.')
+        info.setWordWrap(True)
+        info.setStyleSheet(
+            f'color: {DarkTheme.TEXT_SECONDARY}; font-size: 9pt;')
+        v.addWidget(info)
+
+        btns = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        btns.rejected.connect(dlg.reject)
+        btns.accepted.connect(dlg.accept)
+        v.addWidget(btns)
+
+        dlg.exec()
 
     # ------------------------------------------------------------------
     # List management
@@ -963,7 +1071,7 @@ class CalculatorDialog(QDialog):
             return
         try:
             from utils.windtunnel.calculator import (
-                expand_rule, evaluate_rule_on_point)
+                expand_rule, evaluate, build_namespace)
         except Exception:
             self.lbl_expanded.setText('Expanded outputs: (engine import error)')
             return
@@ -992,23 +1100,57 @@ class CalculatorDialog(QDialog):
                 'Evaluation: load a case to preview test values.')
             return
         pt = red[0]
-        ok_count = 0
-        first_result = None
-        for name, expr in expansions[:50]:
-            r = evaluate_rule_on_point(expr, pt)
-            if r is not None:
-                ok_count += 1
-                if first_result is None:
-                    first_result = (name, float(np.mean(r)))
-        if first_result is None:
+        ns = build_namespace(pt)
+
+        ok = []         # list of (name, mean)
+        failed = []     # list of (name, error_str)
+        for name, expr in expansions:
+            try:
+                r = evaluate(expr, ns)
+                arr = np.asarray(r, dtype=float)
+                if arr.size == 0:
+                    failed.append((name, 'empty array'))
+                    continue
+                ok.append((name, float(np.mean(arr))))
+            except ValueError as e:
+                # Extract the missing variable name if NameError-like
+                msg = str(e)
+                # Trim to a useful one-line snippet
+                if "'" in msg:
+                    short = msg[msg.find("'"):msg.rfind("'") + 1]
+                else:
+                    short = msg.splitlines()[0][:120]
+                failed.append((name, short))
+            except Exception as e:
+                failed.append((name, f'{type(e).__name__}: {e}'))
+
+        n_total = len(expansions)
+        n_ok = len(ok)
+        if n_ok == 0:
+            # Show the first failure to help diagnose
+            if failed:
+                _, msg = failed[0]
+                self.lbl_eval.setText(
+                    f'Evaluation FAILED: 0/{n_total} OK.  First error '
+                    f'(rule {failed[0][0]}): {msg}')
+            else:
+                self.lbl_eval.setText(
+                    f'Evaluation: {n_total} expansion(s), 0 evaluated.')
+        elif n_ok == n_total:
+            n, mean = ok[0]
             self.lbl_eval.setText(
-                f'Evaluation: {len(expansions)} expansion(s), 0 evaluated '
-                '(check expression).')
+                f'Evaluation OK: {n_ok}/{n_total} succeed.  '
+                f'Sample {n} mean = {mean:.6g}')
         else:
-            n, mean = first_result
+            # Partial success - show count + first failing name + reason
+            failed_names = [n for n, _ in failed]
+            shown = ', '.join(failed_names[:5])
+            if len(failed_names) > 5:
+                shown += f' (+{len(failed_names) - 5})'
+            _, reason = failed[0]
             self.lbl_eval.setText(
-                f'Evaluation OK: {ok_count}/{len(expansions)} expressions '
-                f'succeed on first point.  Sample {n} mean = {mean:.6g}')
+                f'PARTIAL: {n_ok}/{n_total} succeed.  Failed: {shown}.  '
+                f'First reason: {reason}')
 
     # ------------------------------------------------------------------
     # Result
