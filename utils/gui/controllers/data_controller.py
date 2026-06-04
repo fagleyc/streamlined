@@ -970,8 +970,14 @@ class DataController(QObject):
             case.custom_vars_std = {}
             return
         try:
-            from utils.windtunnel.calculator import apply_rules_to_case
-            means, stds = apply_rules_to_case(case, rules)
+            from utils.windtunnel.calculator import (
+                apply_rules_to_case, geometry_scalars)
+            # Make geometric parameters (MAC, span, ref_area, MRC_x/y/z)
+            # available as named scalars in user expressions.
+            geo = self.model.get_geometry_for_case(case.id)
+            extra = geometry_scalars(geo)
+            means, stds = apply_rules_to_case(
+                case, rules, extra_scalars=extra)
             case.custom_vars = means
             case.custom_vars_std = stds
         except Exception:

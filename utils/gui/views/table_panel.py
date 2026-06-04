@@ -1135,6 +1135,156 @@ class TablePanel(QWidget):
         raw['Mz'] = Mz
         return raw
 
+    # ------------------------------------------------------------------
+    # Categorized export structure (MAT / HDF5)
+    # ------------------------------------------------------------------
+
+    def _case_extra_scalars(self, case: TestCase) -> dict:
+        try:
+            from utils.windtunnel.calculator import geometry_scalars
+            geo = self.model.get_geometry_for_case(case.id)
+            return geometry_scalars(geo)
+        except Exception:
+            return {}
+
+    def _per_point_means_grouped(self, case: TestCase):
+        """
+        Iterate case.daq.red and build:
+          - means: dict[var_name -> array shaped like case.alphas]
+          - raw_means: dict[raw_channel_name -> array shaped like alphas]
+        Returns (means, raw_means).
+        """
+        daq = getattr(case, 'daq', None)
+        red = getattr(daq, 'red', None) if daq is not None else None
+        if not red:
+            return {}, {}
+
+        try:
+            from utils.windtunnel.calculator import build_namespace
+        except Exception:
+            return {}, {}
+
+        extra = self._case_extra_scalars(case)
+
+        per_var: dict = {}
+        per_raw: dict = {}
+        for pt in red:
+            try:
+                ns = build_namespace(pt, extra_scalars=extra)
+            except Exception:
+                continue
+            for name, val in ns.items():
+                try:
+                    arr = np.asarray(val, dtype=float)
+                    if arr.ndim == 0:
+                        m = float(arr)
+                    elif arr.size == 0:
+                        m = float('nan')
+                    else:
+                        m = float(np.mean(arr))
+                except Exception:
+                    m = float('nan')
+                per_var.setdefault(name, []).append(m)
+            air_on = getattr(pt, 'air_on', None) or {}
+            for name, val in air_on.items():
+                try:
+                    arr = np.asarray(val, dtype=float)
+                    m = float(np.mean(arr)) if arr.size > 0 else float('nan')
+                except Exception:
+                    m = float('nan')
+                per_raw.setdefault(name, []).append(m)
+
+        # Reshape via sort_idx + alphas.shape
+        sort_idx = None
+        ss = getattr(daq, 'ss', None)
+        if ss is not None and hasattr(ss, 'indices'):
+            try:
+                sort_idx = np.asarray(ss.indices)
+            except Exception:
+                sort_idx = None
+        target = case.alphas.shape
+
+        def _shape(lst):
+            flat = np.array(lst, dtype=float)
+            if (sort_idx is not None and sort_idx.size > 0
+                    and len(flat) >= sort_idx.size):
+                try:
+                    flat = flat[sort_idx]
+                except Exception:
+                    pass
+            try:
+                if target != flat.shape:
+                    flat = flat.reshape(target)
+            except ValueError:
+                pass
+            return flat
+
+        means = {k: _shape(v) for k, v in per_var.items()}
+        raw_means = {k: _shape(v) for k, v in per_raw.items()}
+        return means, raw_means
+
+    def _build_categorized_struct(self, case: TestCase) -> dict:
+        """
+        Build a nested dict for MAT/HDF5 export organized by the
+        calculator's variable categories:
+            case.Tunnel_Conditions.Q, ...
+            case.BRF_Forces.Fx, ...
+            case.WRF_Forces.Lift, ...
+            case.Pressure_Ports.p0, ...
+            case.Balance_Channels.N1, ...
+            case.Coefficients.Cl, ...
+            case.Geometry.MAC, ...
+            case.Position.alpha, ...
+            case.Raw.<every raw channel>
+        Plus case.Custom and case.Custom_std if any rules are active.
+        Returns a dict ready to merge into the case_struct.
+        """
+        means, raw_means = self._per_point_means_grouped(case)
+        try:
+            from utils.windtunnel.calculator import categorize_variables
+        except Exception:
+            return {}
+
+        out: dict = {}
+        cats = categorize_variables(sorted(means.keys()))
+        # Map category display name -> safe struct field name
+        category_keys = {
+            'Pressure Ports': 'Pressure_Ports',
+            'Balance Channels': 'Balance_Channels',
+            'Tunnel Conditions': 'Tunnel_Conditions',
+            'BRF Forces': 'BRF_Forces',
+            'WRF Forces': 'WRF_Forces',
+            'Coefficients': 'Coefficients',
+            'Geometry': 'Geometry',
+            'Position / Time': 'Position',
+            'Constants': 'Constants',
+            'Other': 'Other',
+        }
+        for cat_name, names in cats.items():
+            if not names:
+                continue
+            key = category_keys.get(cat_name,
+                                    self._sanitize_matlab_name(cat_name))
+            sub = {}
+            for n in names:
+                arr = means.get(n)
+                if arr is None:
+                    continue
+                safe = self._sanitize_matlab_name(n)
+                sub[safe] = np.asarray(arr)
+            if sub:
+                out[key] = sub
+
+        # All raw signals
+        if raw_means:
+            raw_sub = {}
+            for n, arr in raw_means.items():
+                safe = self._sanitize_matlab_name(n)
+                raw_sub[safe] = np.asarray(arr)
+            out['Raw'] = raw_sub
+
+        return out
+
     def _build_calibration_header(self) -> list:
         """Build calibration key-value pairs for Excel/header export."""
         header = []
@@ -1410,31 +1560,24 @@ class TablePanel(QWidget):
                 used_names = {}
 
                 for case in cases_to_export:
-                    rows = self._get_case_rows(case)
-                    case_df = pd.DataFrame(rows, columns=col_headers)
+                    # Categorized struct: case.Tunnel_Conditions.Q,
+                    # case.BRF_Forces.Fx, case.Pressure_Ports.p0, etc.,
+                    # plus case.Raw.<every raw channel>.
+                    case_struct = self._build_categorized_struct(case)
 
-                    # Build struct with data arrays
-                    case_struct = {}
-                    for col_name in case_df.columns:
-                        safe_col = self._sanitize_matlab_name(col_name)
-                        case_struct[safe_col] = case_df[col_name].values
-
-                    # Add metadata sub-struct
+                    # Metadata sub-struct (calibration, geometry, etc.)
                     case_struct['meta'] = self._build_case_meta(case)
-
-                    # Add raw (per-point means in selected output units)
-                    case_struct['raw'] = self._build_raw_dict(case)
 
                     # Custom calculator outputs: per-point mean + std
                     custom_means = getattr(case, 'custom_vars', None) or {}
                     custom_stds = getattr(case, 'custom_vars_std', None) or {}
                     if custom_means:
-                        case_struct['custom'] = {
+                        case_struct['Custom'] = {
                             self._sanitize_matlab_name(name): np.asarray(arr)
                             for name, arr in custom_means.items()
                         }
                     if custom_stds:
-                        case_struct['custom_std'] = {
+                        case_struct['Custom_std'] = {
                             self._sanitize_matlab_name(name): np.asarray(arr)
                             for name, arr in custom_stds.items()
                         }
@@ -1574,23 +1717,20 @@ class TablePanel(QWidget):
                             case_grp.attrs['Reynolds'] = (
                                 case.reynolds_number)
 
-                        # Averaged data sub-group
-                        avg_grp = case_grp.create_group('averaged')
-                        rows = self._get_case_rows(case)
-                        case_df = pd.DataFrame(rows, columns=col_headers)
-                        for col_name in case_df.columns:
-                            avg_grp.create_dataset(
-                                col_name,
-                                data=case_df[col_name].values)
-
-                        # Raw (per-point means) sub-group
-                        raw_dict = self._build_raw_dict(case)
-                        raw_grp = case_grp.create_group('raw')
-                        for k, v in raw_dict.items():
-                            if isinstance(v, np.ndarray):
-                                raw_grp.create_dataset(k, data=v)
-                            else:
-                                raw_grp.attrs[k] = v
+                        # Categorized data: per-point means grouped
+                        # by Tunnel_Conditions / BRF_Forces / etc.,
+                        # plus a Raw group containing every raw DAQ
+                        # channel's per-point mean.
+                        categorized = self._build_categorized_struct(
+                            case)
+                        for cat_key, sub in categorized.items():
+                            sub_grp = case_grp.create_group(cat_key)
+                            for name, arr in sub.items():
+                                try:
+                                    sub_grp.create_dataset(
+                                        name, data=np.asarray(arr))
+                                except Exception:
+                                    pass
 
                         # Custom calculator outputs: means and stds
                         custom_means = getattr(
@@ -1598,7 +1738,7 @@ class TablePanel(QWidget):
                         custom_stds = getattr(
                             case, 'custom_vars_std', None) or {}
                         if custom_means:
-                            cust_grp = case_grp.create_group('custom')
+                            cust_grp = case_grp.create_group('Custom')
                             for name, arr in custom_means.items():
                                 try:
                                     cust_grp.create_dataset(
@@ -1607,7 +1747,7 @@ class TablePanel(QWidget):
                                     pass
                         if custom_stds:
                             cust_std_grp = case_grp.create_group(
-                                'custom_std')
+                                'Custom_std')
                             for name, arr in custom_stds.items():
                                 try:
                                     cust_std_grp.create_dataset(

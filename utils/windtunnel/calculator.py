@@ -265,7 +265,8 @@ def evaluate(expression: str, namespace: Dict[str, Any]) -> Any:
 # Per-point variable namespace
 # ----------------------------------------------------------------------
 
-def build_namespace(pt) -> Dict[str, np.ndarray]:
+def build_namespace(pt, extra_scalars: Optional[Dict[str, float]] = None
+                     ) -> Dict[str, np.ndarray]:
     """
     Build the variable namespace for one ReducedDataPoint.
 
@@ -276,10 +277,14 @@ def build_namespace(pt) -> Dict[str, np.ndarray]:
          only added when the name is not already a raw channel
       4. BRF / WRF force aliases - same precedence rule
       5. Coefficient aliases - same precedence rule
+      6. extra_scalars - caller-supplied scalars (geometry: MAC, span,
+         ref_area, MRC_x, MRC_y, MRC_z, etc.).  Added LAST so they
+         don't clobber any matching raw channel.
 
-    The precedence rule fixes a class of bugs where a user has
-    pressure channels named e.g. 'p0', 'P0', or 'Q' that would
-    otherwise be overwritten by my tunnel-condition aliases.
+    Each canonical concept has a single canonical name plus, where
+    useful, one physics-textbook alias (e.g. Q + q_inf, P_static
+    + p_inf).  Redundant case variants and abbreviations were
+    removed in v1.2.7.
     """
     ns: Dict[str, Any] = {}
 
@@ -302,27 +307,29 @@ def build_namespace(pt) -> Dict[str, np.ndarray]:
             except Exception:
                 pass
 
-    # 3. Tunnel conditions - alias only if name absent from raw data
+    # 3. Tunnel conditions - alias only if name absent from raw data.
+    # Canonical name + one common physics alias per concept.  No
+    # redundant case variants (no 'q', 'M', 'U', 'density', etc.).
     tc = getattr(pt, 'tunnel', None)
     if tc is not None:
         mappings = {
-            'Q': 'Q', 'q': 'Q', 'q_psi': 'Q',
-            'q_pa': 'Q_mks', 'Q_mks': 'Q_mks',
-            'P_tot': 'P_tot', 'Ptot_tunnel': 'P_tot',
-            'p_static': 'P_static', 'P_static': 'P_static',
-            'p_inf': 'P_static',
-            'q_inf': 'Q',
-            'T0': 'T0',
-            'T_static': 'T',
-            'U_inf': 'U_inf', 'U': 'U_inf',
+            'Q': 'Q',              # Dynamic pressure (internal psi)
+            'q_inf': 'Q',          # Physics alias
+            'Q_mks': 'Q_mks',      # Dynamic pressure in Pa
+            'P_tot': 'P_tot',      # Total / stagnation pressure
+            'P_static': 'P_static',
+            'p_inf': 'P_static',   # Physics alias
+            'T0': 'T0',            # Total temperature
+            'T_static': 'T',       # Static temperature
+            'U_inf': 'U_inf',
             'Mach': 'Mach',
             'Re': 'Re',
-            'a': 'a', 'sound_speed': 'a',
-            'rho': 'rho', 'density': 'rho',
+            'a': 'a',              # Speed of sound
+            'rho': 'rho',          # Static density
         }
         for alias, src in mappings.items():
             if alias in ns:
-                continue  # Raw data wins
+                continue
             v = getattr(tc, src, None)
             if v is not None and not (isinstance(v, np.ndarray)
                                        and v.size == 0):
@@ -370,14 +377,28 @@ def build_namespace(pt) -> Dict[str, np.ndarray]:
             if v is not None and np.asarray(v).size > 0:
                 ns[attr] = np.asarray(v, dtype=float)
 
+    # 7. Caller-supplied scalars (geometry, etc.).  Never clobber
+    # raw or computed time-series values - geometry is constant
+    # across the test point so it has lower precedence.
+    if extra_scalars:
+        for k, v in extra_scalars.items():
+            if k in ns:
+                continue
+            try:
+                ns[k] = float(v)
+            except (TypeError, ValueError):
+                pass
+
     return ns
 
 
-def available_variables(case) -> List[str]:
+def available_variables(case,
+                         extra_scalars: Optional[Dict[str, float]] = None
+                         ) -> List[str]:
     """
     Return the names available for expression use in the first
-    test point of the case.  Useful for auto-detect of pressure
-    port enumeration.
+    test point of the case, including any caller-supplied scalars
+    (e.g. geometry parameters).
     """
     if case is None:
         return []
@@ -386,7 +407,7 @@ def available_variables(case) -> List[str]:
     if not red:
         return []
     try:
-        ns = build_namespace(red[0])
+        ns = build_namespace(red[0], extra_scalars=extra_scalars)
     except Exception:
         return []
     return sorted(ns.keys())
@@ -395,15 +416,21 @@ def available_variables(case) -> List[str]:
 # Categorization for the UI variable picker.  Each entry is
 # (category_name, predicate).  The first matching category wins.
 _TUNNEL_NAMES = {
-    'Q', 'q', 'q_psi', 'q_pa', 'Q_mks',
-    'p0', 'P0', 'P_tot', 'p_static', 'P_static', 'p_inf',
-    'q_inf', 'T0', 'T', 'T_static',
-    'U_inf', 'U', 'Mach', 'M', 'Re', 'a', 'sound_speed',
-    'rho', 'density',
+    'Q', 'q_inf', 'Q_mks',
+    'P_tot', 'P_static', 'p_inf',
+    'T0', 'T_static',
+    'U_inf', 'Mach', 'Re', 'a', 'rho',
+    # Raw tunnel measurements (used to be classified as balance
+    # channels; they are tunnel-condition sensors, not balance).
+    'Pdiff', 'Ptot', 'Temp',
 }
 _BRF_NAMES = {'Fx', 'Fy', 'Fz', 'Mx', 'My', 'Mz'}
 _WRF_NAMES = {'Lift', 'Drag', 'Side', 'Roll_W', 'Pitch_W', 'Yaw_W'}
 _COEFF_NAMES = {'Cl', 'Cd', 'Cs', 'CRoll', 'CPitch', 'CYaw'}
+_GEOMETRY_NAMES = {
+    'MAC', 'span', 'ref_area',
+    'MRC_x', 'MRC_y', 'MRC_z',
+}
 _CONSTANTS = {'pi', 'e'}
 
 
@@ -424,6 +451,7 @@ def categorize_variables(names: List[str]) -> Dict[str, List[str]]:
         'BRF Forces': [],
         'WRF Forces': [],
         'Coefficients': [],
+        'Geometry': [],
         'Position / Time': [],
         'Constants': [],
         'Other': [],
@@ -433,7 +461,8 @@ def categorize_variables(names: List[str]) -> Dict[str, List[str]]:
     bal_chan_names = {
         'N1', 'N2', 'Y1', 'Y2', 'Axial', 'Roll', 'Excitation',
         'AftPitch', 'AftYaw', 'FwdPitch', 'FwdYaw',
-        'Pdiff', 'Ptot', 'Temp',
+        # Pdiff / Ptot / Temp are tunnel measurements, not balance.
+        # See _TUNNEL_NAMES above.
     }
     pos_time_names = {'alpha', 'beta', 'time', 'Alpha', 'Beta', 'Time'}
 
@@ -454,6 +483,8 @@ def categorize_variables(names: List[str]) -> Dict[str, List[str]]:
             result['WRF Forces'].append(name)
         elif name in _COEFF_NAMES:
             result['Coefficients'].append(name)
+        elif name in _GEOMETRY_NAMES:
+            result['Geometry'].append(name)
         elif name in pos_time_names:
             result['Position / Time'].append(name)
         elif name in _CONSTANTS:
@@ -504,11 +535,12 @@ OPERATORS = [
 # Apply rules to a case
 # ----------------------------------------------------------------------
 
-def evaluate_rule_on_point(rule_expression: str,
-                            pt) -> Optional[np.ndarray]:
+def evaluate_rule_on_point(rule_expression: str, pt,
+                            extra_scalars: Optional[Dict[str, float]] = None
+                            ) -> Optional[np.ndarray]:
     """Evaluate the (expanded) expression against one point's namespace."""
     try:
-        ns = build_namespace(pt)
+        ns = build_namespace(pt, extra_scalars=extra_scalars)
         result = evaluate(rule_expression, ns)
         if np.isscalar(result):
             return np.array([float(result)])
@@ -517,7 +549,8 @@ def evaluate_rule_on_point(rule_expression: str,
         return None
 
 
-def apply_rules_to_case(case, rules: List[CalcRule]
+def apply_rules_to_case(case, rules: List[CalcRule],
+                         extra_scalars: Optional[Dict[str, float]] = None
                          ) -> Tuple[Dict[str, np.ndarray],
                                     Dict[str, np.ndarray]]:
     """
@@ -550,8 +583,10 @@ def apply_rules_to_case(case, rules: List[CalcRule]
     if not red:
         return means_out, stds_out
 
-    # Discover available variables from the first point
-    av_vars = available_variables(case)
+    # Discover available variables from the first point.  Include
+    # caller-supplied scalars (geometry parameters) so 'MAC', 'span',
+    # etc. are visible to auto-range and template substitutions.
+    av_vars = available_variables(case, extra_scalars=extra_scalars)
     if not av_vars:
         return means_out, stds_out
 
@@ -585,7 +620,8 @@ def apply_rules_to_case(case, rules: List[CalcRule]
             mean_scalars = []
             std_scalars = []
             for pt in red:
-                arr = evaluate_rule_on_point(expr, pt)
+                arr = evaluate_rule_on_point(
+                    expr, pt, extra_scalars=extra_scalars)
                 if arr is None or arr.size == 0:
                     mean_scalars.append(np.nan)
                     std_scalars.append(np.nan)
@@ -600,6 +636,38 @@ def apply_rules_to_case(case, rules: List[CalcRule]
             stds_out[output_name] = _shape_to_grid(
                 np.asarray(std_scalars, dtype=float))
     return means_out, stds_out
+
+
+def geometry_scalars(geo: Optional[dict]) -> Dict[str, float]:
+    """
+    Map a Streamlined geometry dict to the named scalars exposed in
+    the calculator namespace.  Used by the controller to inject
+    MAC / span / ref_area / MRC_{x,y,z} for any case being evaluated.
+    Returns empty dict for None / malformed input.
+    """
+    if not geo:
+        return {}
+    out: Dict[str, float] = {}
+    try:
+        out['MAC'] = float(geo.get('mac', 0.0))
+    except (TypeError, ValueError):
+        pass
+    try:
+        out['span'] = float(geo.get('span', 0.0))
+    except (TypeError, ValueError):
+        pass
+    try:
+        out['ref_area'] = float(geo.get('ref_area', 0.0))
+    except (TypeError, ValueError):
+        pass
+    mrc = geo.get('mrc')
+    if isinstance(mrc, (list, tuple, np.ndarray)):
+        for axis, key in enumerate(('MRC_x', 'MRC_y', 'MRC_z')):
+            try:
+                out[key] = float(mrc[axis]) if len(mrc) > axis else 0.0
+            except (TypeError, ValueError):
+                out[key] = 0.0
+    return out
 
 
 def expanded_output_names(rules: List[CalcRule],
