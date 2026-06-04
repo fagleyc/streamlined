@@ -22,7 +22,7 @@ from .table_panel import TablePanel
 from .time_history_panel import TimeHistoryPanel
 from .dialogs import (
     GeometryDialog, CalibrationDialog, AboutDialog, OutputUnitsDialog,
-    TunnelCorrectionsDialog,
+    TunnelCorrectionsDialog, CalculatorDialog,
 )
 from ..widgets.export_dialog import ExportDialog
 from ..utils.themes import DarkTheme
@@ -188,6 +188,15 @@ class MainWindow(QMainWindow):
         self.action_tunnel_corrections.triggered.connect(
             self._show_tunnel_corrections_dialog)
         edit_menu.addAction(self.action_tunnel_corrections)
+
+        self.action_calculator = QAction(
+            "Custom &Calculator...", self)
+        self.action_calculator.setShortcut(QKeySequence("Ctrl+Shift+C"))
+        self.action_calculator.setStatusTip(
+            "Define expression-based derived variables (e.g. Cp1..Cp32)")
+        self.action_calculator.triggered.connect(
+            self._show_calculator_dialog)
+        edit_menu.addAction(self.action_calculator)
 
         edit_menu.addSeparator()
 
@@ -445,6 +454,61 @@ class MainWindow(QMainWindow):
             units = dialog.get_units()
             self.model.set_output_units(units)
             self.set_status(f"Output units set to {units}")
+
+    def _show_calculator_dialog(self):
+        """Show the custom calculator editor."""
+        # Pick a preview case: the one currently selected in the table
+        # panel if any, otherwise the first case with data.
+        preview_case = None
+        try:
+            cid = self.table_panel.cmb_case.currentData()
+            if cid:
+                preview_case = self.model.cases.get(cid)
+        except Exception:
+            pass
+        if preview_case is None:
+            for c in self.model.cases:
+                if c.has_data:
+                    preview_case = c
+                    break
+
+        # Collect the variable names available for the preview case so
+        # the dialog can show them and auto-detect ranges.
+        available = []
+        if preview_case is not None:
+            try:
+                from utils.windtunnel.calculator import available_variables
+                available = available_variables(preview_case)
+            except Exception:
+                available = []
+
+        dialog = CalculatorDialog(
+            self,
+            rules=self.model.calc_rules,
+            available_vars=available,
+            preview_case=preview_case,
+        )
+        if dialog.exec():
+            new_rules = dialog.get_rules()
+            self.model.calc_rules = new_rules
+            # Apply the updated rules to every loaded case
+            n = 0
+            if hasattr(self, 'data_controller'):
+                n = self.data_controller.reapply_calc_rules_to_all_cases()
+            self.set_status(
+                f"Calculator: {len(new_rules)} rule(s), "
+                f"applied to {n} case(s)")
+            # Push the expanded names to the plot type selector so
+            # the user can pick any custom variable as the Y axis.
+            try:
+                from utils.windtunnel.calculator import expanded_output_names
+                names = expanded_output_names(new_rules, preview_case)
+                self.plot_panel.plot_controls.plot_selector.populate_custom_vars(names)
+            except Exception:
+                pass
+            # Refresh plot / table since custom_vars changed
+            if hasattr(self.plot_panel, '_update_plot'):
+                self.plot_panel._update_plot()
 
     def _show_tunnel_corrections_dialog(self):
         """Show tunnel-blockage / wall-effect correction settings."""

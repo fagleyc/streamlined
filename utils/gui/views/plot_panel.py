@@ -298,7 +298,11 @@ class PlotPanel(QWidget):
         self.plot_canvas.refresh()
 
     def _get_axis_vars(self, plot_type: PlotType):
-        """Get X and Y variable names for plot type."""
+        """Get X and Y variable names for plot type.
+
+        If the Custom Y dropdown is set, its value overrides the y_var
+        for the current plot type while keeping the same x_var.
+        """
         var_map = {
             PlotType.CL_VS_ALPHA: ("Alpha", "Cl"),
             PlotType.CD_VS_ALPHA: ("Alpha", "Cd"),
@@ -318,7 +322,16 @@ class PlotPanel(QWidget):
             PlotType.CNB_VS_ALPHA: ("Alpha", "Cnb"),
             PlotType.CLB_VS_ALPHA: ("Alpha", "Clb"),
         }
-        return var_map.get(plot_type, ("Alpha", "Cl"))
+        x_var, y_var = var_map.get(plot_type, ("Alpha", "Cl"))
+
+        # Custom Y override - pulls from PlotTypeSelector dropdown
+        try:
+            custom_y = self.plot_controls.plot_selector.get_custom_y_var()
+        except Exception:
+            custom_y = ""
+        if custom_y:
+            y_var = custom_y
+        return x_var, y_var
 
     def _get_linewidth(self) -> float:
         """Get the current line width setting."""
@@ -622,6 +635,19 @@ class PlotPanel(QWidget):
             return None
         return get_derivative(case, var)
 
+    def _resolve_custom(self, case: TestCase, var: str) -> Optional[np.ndarray]:
+        """
+        Return the user-defined calculator output `var` for the case,
+        or None if it's not a custom variable.
+        """
+        custom = getattr(case, 'custom_vars', None)
+        if not isinstance(custom, dict):
+            return None
+        arr = custom.get(var)
+        if arr is None:
+            return None
+        return np.asarray(arr)
+
     def _get_var_data(self, case: TestCase, sweep_data: Optional[dict],
                       var: str) -> np.ndarray:
         """Get data for a variable."""
@@ -632,6 +658,12 @@ class PlotPanel(QWidget):
                 return case.Cl / np.maximum(case.Cd, 1e-10)
         if var == "Lateral":
             var = "Cs"
+
+        # Custom user-defined calculator outputs are checked first so
+        # the user can shadow / override built-in coefficient names.
+        custom = self._resolve_custom(case, var)
+        if custom is not None:
+            return custom
 
         # Derivatives are computed on demand from the case data
         deriv = self._resolve_derivative(case, var)
@@ -652,6 +684,12 @@ class PlotPanel(QWidget):
         if var == "Lateral":
             var = "Cs"
 
+        custom = self._resolve_custom(case, var)
+        if custom is not None:
+            if custom.ndim == 2:
+                return custom[:, col]
+            return custom
+
         deriv = self._resolve_derivative(case, var)
         if deriv is not None:
             if deriv.ndim == 2:
@@ -669,6 +707,12 @@ class PlotPanel(QWidget):
             return case.Cl[row, :] / np.maximum(case.Cd[row, :], 1e-10)
         if var == "Lateral":
             var = "Cs"
+
+        custom = self._resolve_custom(case, var)
+        if custom is not None:
+            if custom.ndim == 2:
+                return custom[row, :]
+            return custom
 
         deriv = self._resolve_derivative(case, var)
         if deriv is not None:
@@ -690,6 +734,10 @@ class PlotPanel(QWidget):
             return cl / np.maximum(cd, 1e-10)
         if var == "Lateral":
             var = "Cs"
+
+        custom = self._resolve_custom(case, var)
+        if custom is not None:
+            return custom.flatten()[mask]
 
         deriv = self._resolve_derivative(case, var)
         if deriv is not None:

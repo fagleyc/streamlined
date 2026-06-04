@@ -8,6 +8,8 @@ Dialog windows for geometry settings, calibration, etc.
 from pathlib import Path
 from typing import List
 
+import numpy as np
+
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox,
     QLabel, QLineEdit, QDoubleSpinBox, QComboBox, QPushButton,
@@ -550,6 +552,321 @@ class TunnelCorrectionsDialog(QDialog):
             'frontal_area_alpha_high_deg': self.spn_alpha_hi.value(),
             'frontal_area_alpha_high_in2': self.spn_area_hi.value(),
         }
+
+
+class CalculatorDialog(QDialog):
+    """
+    Edit / manage user-defined calculator rules.
+
+    Layout:
+      Left  - list of rules with checkboxes for enabled state and
+              Add / Remove / Duplicate buttons.
+      Right - form editor for the currently selected rule.
+              (name template, expression template, index var, range,
+               description), plus a Preview pane that shows the
+               expanded output names and a test evaluation against
+               the currently selected case.
+    """
+
+    def __init__(self, parent=None, rules=None,
+                 available_vars=None, preview_case=None):
+        super().__init__(parent)
+        self.setWindowTitle('Custom Calculator')
+        self.setMinimumSize(820, 520)
+        self._available_vars = list(available_vars or [])
+        self._preview_case = preview_case
+
+        # Local copy of rules; only committed on accept
+        from utils.windtunnel.calculator import CalcRule
+        self._CalcRule = CalcRule
+        self._rules = [self._copy_rule(r) for r in (rules or [])]
+        self._current_index: int = -1
+        self._suppress_form_update = False
+        self._setup_ui()
+        if self._rules:
+            self.list_widget.setCurrentRow(0)
+
+    def _copy_rule(self, rule):
+        return self._CalcRule(
+            name_template=rule.name_template,
+            expression=rule.expression,
+            index_var=rule.index_var,
+            index_range=rule.index_range,
+            enabled=rule.enabled,
+            description=rule.description,
+        )
+
+    # ------------------------------------------------------------------
+    # UI construction
+    # ------------------------------------------------------------------
+
+    def _setup_ui(self):
+        outer = QHBoxLayout(self)
+
+        # --- left: rule list ---
+        left = QVBoxLayout()
+        left.addWidget(QLabel('Rules:'))
+        self.list_widget = QListWidget()
+        self.list_widget.currentRowChanged.connect(self._on_selection_changed)
+        left.addWidget(self.list_widget, 1)
+
+        btn_row = QHBoxLayout()
+        self.btn_add = QPushButton('+ Add')
+        self.btn_add.clicked.connect(self._add_rule)
+        btn_row.addWidget(self.btn_add)
+        self.btn_dup = QPushButton('Duplicate')
+        self.btn_dup.clicked.connect(self._duplicate_rule)
+        btn_row.addWidget(self.btn_dup)
+        self.btn_remove = QPushButton('- Remove')
+        self.btn_remove.clicked.connect(self._remove_rule)
+        btn_row.addWidget(self.btn_remove)
+        left.addLayout(btn_row)
+        outer.addLayout(left, 0)
+
+        # --- right: editor + preview ---
+        right = QVBoxLayout()
+
+        editor_group = QGroupBox('Rule Editor')
+        form = QFormLayout(editor_group)
+
+        self.chk_enabled = QCheckBox('Enabled')
+        self.chk_enabled.stateChanged.connect(self._on_form_changed)
+        form.addRow('', self.chk_enabled)
+
+        self.txt_name = QLineEdit()
+        self.txt_name.setPlaceholderText('Cp{i}')
+        self.txt_name.textChanged.connect(self._on_form_changed)
+        form.addRow('Output name template:', self.txt_name)
+
+        self.txt_expr = QLineEdit()
+        self.txt_expr.setPlaceholderText('(P{i} - p_inf) / q_inf')
+        self.txt_expr.textChanged.connect(self._on_form_changed)
+        form.addRow('Expression:', self.txt_expr)
+
+        self.txt_index_var = QLineEdit()
+        self.txt_index_var.setPlaceholderText('i')
+        self.txt_index_var.textChanged.connect(self._on_form_changed)
+        form.addRow('Index variable:', self.txt_index_var)
+
+        self.txt_range = QLineEdit()
+        self.txt_range.setPlaceholderText(
+            "1..32   or   1,5,10   or   auto:P{i}   or   blank")
+        self.txt_range.textChanged.connect(self._on_form_changed)
+        form.addRow('Index range:', self.txt_range)
+
+        self.txt_desc = QLineEdit()
+        self.txt_desc.setPlaceholderText('Description (optional)')
+        self.txt_desc.textChanged.connect(self._on_form_changed)
+        form.addRow('Description:', self.txt_desc)
+
+        right.addWidget(editor_group)
+
+        # Preview pane
+        prev_group = QGroupBox('Preview')
+        prev_layout = QVBoxLayout(prev_group)
+        self.lbl_expanded = QLabel('Expanded outputs: -')
+        self.lbl_expanded.setWordWrap(True)
+        prev_layout.addWidget(self.lbl_expanded)
+
+        self.lbl_eval = QLabel('Evaluation: -')
+        self.lbl_eval.setWordWrap(True)
+        self.lbl_eval.setStyleSheet(
+            f'color: {DarkTheme.TEXT_SECONDARY};')
+        prev_layout.addWidget(self.lbl_eval)
+
+        if self._available_vars:
+            avail = ', '.join(self._available_vars[:50])
+            if len(self._available_vars) > 50:
+                avail += f'  (+{len(self._available_vars) - 50} more)'
+            self.lbl_available = QLabel(
+                f'Available variables: {avail}')
+            self.lbl_available.setWordWrap(True)
+            self.lbl_available.setStyleSheet(
+                f'color: {DarkTheme.TEXT_SECONDARY}; font-size: 9pt;')
+            prev_layout.addWidget(self.lbl_available)
+
+        right.addWidget(prev_group, 1)
+
+        # OK / Cancel
+        btns = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel)
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        right.addWidget(btns)
+
+        outer.addLayout(right, 1)
+        self._refresh_list()
+
+    # ------------------------------------------------------------------
+    # List management
+    # ------------------------------------------------------------------
+
+    def _refresh_list(self):
+        self.list_widget.blockSignals(True)
+        self.list_widget.clear()
+        for r in self._rules:
+            display = r.name_template or '(unnamed)'
+            if not r.enabled:
+                display = '[off] ' + display
+            self.list_widget.addItem(display)
+        self.list_widget.blockSignals(False)
+
+    def _add_rule(self):
+        new_rule = self._CalcRule(
+            name_template='NewVar', expression='',
+            index_var='i', index_range='', enabled=True)
+        self._rules.append(new_rule)
+        self._refresh_list()
+        self.list_widget.setCurrentRow(len(self._rules) - 1)
+
+    def _duplicate_rule(self):
+        if self._current_index < 0:
+            return
+        self._rules.append(self._copy_rule(self._rules[self._current_index]))
+        self._refresh_list()
+        self.list_widget.setCurrentRow(len(self._rules) - 1)
+
+    def _remove_rule(self):
+        if self._current_index < 0:
+            return
+        del self._rules[self._current_index]
+        self._refresh_list()
+        if self._rules:
+            self.list_widget.setCurrentRow(
+                min(self._current_index, len(self._rules) - 1))
+        else:
+            self._current_index = -1
+            self._load_form(None)
+
+    def _on_selection_changed(self, row: int):
+        # Save the form into the previously-selected rule before
+        # switching, so edits aren't lost on rapid clicking.
+        if (self._current_index != -1
+                and self._current_index < len(self._rules)):
+            self._save_form_into_rule(self._rules[self._current_index])
+        self._current_index = row
+        if 0 <= row < len(self._rules):
+            self._load_form(self._rules[row])
+        else:
+            self._load_form(None)
+
+    # ------------------------------------------------------------------
+    # Form <-> rule
+    # ------------------------------------------------------------------
+
+    def _load_form(self, rule):
+        self._suppress_form_update = True
+        if rule is None:
+            self.chk_enabled.setChecked(False)
+            self.txt_name.setText('')
+            self.txt_expr.setText('')
+            self.txt_index_var.setText('i')
+            self.txt_range.setText('')
+            self.txt_desc.setText('')
+        else:
+            self.chk_enabled.setChecked(rule.enabled)
+            self.txt_name.setText(rule.name_template)
+            self.txt_expr.setText(rule.expression)
+            self.txt_index_var.setText(rule.index_var)
+            self.txt_range.setText(rule.index_range)
+            self.txt_desc.setText(rule.description)
+        self._suppress_form_update = False
+        self._update_preview(rule)
+
+    def _save_form_into_rule(self, rule):
+        rule.enabled = self.chk_enabled.isChecked()
+        rule.name_template = self.txt_name.text().strip()
+        rule.expression = self.txt_expr.text().strip()
+        rule.index_var = self.txt_index_var.text().strip() or 'i'
+        rule.index_range = self.txt_range.text().strip()
+        rule.description = self.txt_desc.text().strip()
+
+    def _on_form_changed(self):
+        if self._suppress_form_update:
+            return
+        if self._current_index < 0 or self._current_index >= len(self._rules):
+            return
+        rule = self._rules[self._current_index]
+        self._save_form_into_rule(rule)
+        # Refresh list label without rebuilding from scratch
+        item = self.list_widget.item(self._current_index)
+        if item is not None:
+            display = rule.name_template or '(unnamed)'
+            if not rule.enabled:
+                display = '[off] ' + display
+            item.setText(display)
+        self._update_preview(rule)
+
+    # ------------------------------------------------------------------
+    # Preview
+    # ------------------------------------------------------------------
+
+    def _update_preview(self, rule):
+        if rule is None:
+            self.lbl_expanded.setText('Expanded outputs: -')
+            self.lbl_eval.setText('Evaluation: -')
+            return
+        try:
+            from utils.windtunnel.calculator import (
+                expand_rule, evaluate_rule_on_point)
+        except Exception:
+            self.lbl_expanded.setText('Expanded outputs: (engine import error)')
+            return
+
+        expansions = expand_rule(rule, self._available_vars)
+        if not expansions:
+            self.lbl_expanded.setText(
+                'Expanded outputs: (none - check name/range)')
+            self.lbl_eval.setText('Evaluation: -')
+            return
+
+        names = [n for n, _ in expansions]
+        names_shown = ', '.join(names[:20])
+        if len(names) > 20:
+            names_shown += f'  (+{len(names) - 20} more)'
+        self.lbl_expanded.setText(
+            f'Expanded outputs ({len(names)}): {names_shown}')
+
+        # Test evaluation on the first point of preview_case
+        case = self._preview_case
+        red = (getattr(case.daq, 'red', None)
+               if case is not None and getattr(case, 'daq', None) is not None
+               else None)
+        if not red:
+            self.lbl_eval.setText(
+                'Evaluation: load a case to preview test values.')
+            return
+        pt = red[0]
+        ok_count = 0
+        first_result = None
+        for name, expr in expansions[:50]:
+            r = evaluate_rule_on_point(expr, pt)
+            if r is not None:
+                ok_count += 1
+                if first_result is None:
+                    first_result = (name, float(np.mean(r)))
+        if first_result is None:
+            self.lbl_eval.setText(
+                f'Evaluation: {len(expansions)} expansion(s), 0 evaluated '
+                '(check expression).')
+        else:
+            n, mean = first_result
+            self.lbl_eval.setText(
+                f'Evaluation OK: {ok_count}/{len(expansions)} expressions '
+                f'succeed on first point.  Sample {n} mean = {mean:.6g}')
+
+    # ------------------------------------------------------------------
+    # Result
+    # ------------------------------------------------------------------
+
+    def get_rules(self):
+        # Make sure pending form edits are committed
+        if 0 <= self._current_index < len(self._rules):
+            self._save_form_into_rule(self._rules[self._current_index])
+        # Filter empty rules out
+        return [r for r in self._rules
+                if r.name_template and r.expression]
 
 
 class CalibrationDialog(QDialog):

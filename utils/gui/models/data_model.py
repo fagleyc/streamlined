@@ -132,6 +132,13 @@ class DataModel(QObject):
         # behavior.
         self.blockage_config: dict = {'method': 'none'}
 
+        # User-defined calculator rules.  Each entry is a CalcRule
+        # (see utils/windtunnel/calculator.py).  Persisted in config.
+        # Default is empty so no behavior change for existing users.
+        from utils.windtunnel.calculator import CalcRule  # local import
+        self._CalcRule_cls = CalcRule  # cached for clarity in methods
+        self.calc_rules: list = []
+
         # Filter state
         self.filters = FilterState()
 

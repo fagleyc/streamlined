@@ -391,6 +391,18 @@ class PlotTypeSelector(QWidget):
         self.cmb_plot_type.currentIndexChanged.connect(self._on_changed)
         layout.addWidget(self.cmb_plot_type)
 
+        # Custom Y override - when set, overrides the y variable from
+        # the plot type.  Populated dynamically from active calculator
+        # rules via populate_custom_vars().
+        layout.addSpacing(12)
+        self.lbl_custom = QLabel("Custom Y:")
+        layout.addWidget(self.lbl_custom)
+        self.cmb_custom_y = QComboBox()
+        self.cmb_custom_y.setMinimumWidth(120)
+        self.cmb_custom_y.addItem("(none)", "")
+        self.cmb_custom_y.currentIndexChanged.connect(self._on_changed)
+        layout.addWidget(self.cmb_custom_y)
+
     def _on_changed(self, index):
         value = self.cmb_plot_type.currentData()
         self.plot_type_changed.emit(value)
@@ -405,3 +417,22 @@ class PlotTypeSelector(QWidget):
             if self.cmb_plot_type.itemData(i) == plot_type:
                 self.cmb_plot_type.setCurrentIndex(i)
                 break
+
+    def get_custom_y_var(self) -> str:
+        """Return the user-selected custom Y variable (empty string if none)."""
+        return self.cmb_custom_y.currentData() or ""
+
+    def populate_custom_vars(self, names: list):
+        """Re-populate the custom-Y combobox from a list of variable names."""
+        current = self.cmb_custom_y.currentData()
+        self.cmb_custom_y.blockSignals(True)
+        self.cmb_custom_y.clear()
+        self.cmb_custom_y.addItem("(none)", "")
+        for n in names:
+            self.cmb_custom_y.addItem(n, n)
+        if current:
+            for i in range(self.cmb_custom_y.count()):
+                if self.cmb_custom_y.itemData(i) == current:
+                    self.cmb_custom_y.setCurrentIndex(i)
+                    break
+        self.cmb_custom_y.blockSignals(False)
