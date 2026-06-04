@@ -639,14 +639,27 @@ class PlotPanel(QWidget):
         """
         Return the user-defined calculator output `var` for the case,
         or None if it's not a custom variable.
+
+        Supports `<name>_std` lookup: if a direct hit fails and the
+        name ends in `_std`, the parallel custom_vars_std dict is
+        consulted.  This is how sigma shading flows through the
+        same _get_*_data accessor path as primary values.
         """
         custom = getattr(case, 'custom_vars', None)
-        if not isinstance(custom, dict):
-            return None
-        arr = custom.get(var)
-        if arr is None:
-            return None
-        return np.asarray(arr)
+        if isinstance(custom, dict):
+            arr = custom.get(var)
+            if arr is not None:
+                return np.asarray(arr)
+
+        # Std-dev fallback for custom variables (e.g. 'Cp1_std')
+        if var.endswith('_std'):
+            base = var[:-len('_std')]
+            stds = getattr(case, 'custom_vars_std', None)
+            if isinstance(stds, dict):
+                arr = stds.get(base)
+                if arr is not None:
+                    return np.asarray(arr)
+        return None
 
     def _get_var_data(self, case: TestCase, sweep_data: Optional[dict],
                       var: str) -> np.ndarray:
@@ -747,7 +760,13 @@ class PlotPanel(QWidget):
         return data.flatten()[mask]
 
     def _get_std_var(self, var: str) -> Optional[str]:
-        """Map a coefficient variable name to its std dev counterpart."""
+        """Map a coefficient variable name to its std dev counterpart.
+
+        Built-in coefficients map to their `<name>_std` field.  Custom
+        calculator variables ALSO map to `<name>_std`, which is then
+        resolved by _resolve_custom against case.custom_vars_std.
+        Returns None for vars that don't have a std-dev companion.
+        """
         std_map = {
             'Cl': 'Cl_std', 'CL': 'Cl_std',
             'Cd': 'Cd_std', 'CD': 'Cd_std',
@@ -756,7 +775,17 @@ class PlotPanel(QWidget):
             'CPitch': 'CPitch_std', 'Cm': 'CPitch_std',
             'CYaw': 'CYaw_std', 'Cn': 'CYaw_std',
         }
-        return std_map.get(var)
+        if var in std_map:
+            return std_map[var]
+        # Custom variable - use `<name>_std` which _resolve_custom
+        # routes to case.custom_vars_std.  Only valid if the var is
+        # actually in custom_vars on at least one currently-visible
+        # case; we do a soft check via the model.
+        for c in self.model.cases:
+            cv = getattr(c, 'custom_vars', None)
+            if isinstance(cv, dict) and var in cv:
+                return var + '_std'
+        return None
 
     def update_filters(self):
         """Update filter options from model."""

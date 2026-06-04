@@ -172,6 +172,9 @@ class TestCase:
     # array reshaped to match self.alphas.shape.  Populated by
     # DataController._apply_calc_rules_to_case after reduction.
     custom_vars: Dict[str, np.ndarray] = field(default_factory=dict)
+    # Parallel dict of per-point std-dev arrays (same shape as the
+    # mean arrays).  Used for sigma shading on plots.
+    custom_vars_std: Dict[str, np.ndarray] = field(default_factory=dict)
 
     # Tunnel conditions object
     tunnel_conditions: TunnelConditions = field(default_factory=TunnelConditions)
