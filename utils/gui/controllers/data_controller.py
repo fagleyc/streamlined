@@ -958,21 +958,26 @@ class DataController(QObject):
     def _apply_calc_rules_to_case(self, case: TestCase) -> None:
         """
         Run every active calculator rule on `case` and populate
-        case.custom_vars with the per-point mean arrays reshaped to
-        the case's alpha/beta grid.  Safe to call repeatedly.
+        both case.custom_vars (means) and case.custom_vars_std (stds)
+        with arrays reshaped to the case's alpha/beta grid.  Safe to
+        call repeatedly.
         """
         if not case.has_data:
             return
         rules = getattr(self.model, 'calc_rules', None) or []
         if not rules:
             case.custom_vars = {}
+            case.custom_vars_std = {}
             return
         try:
             from utils.windtunnel.calculator import apply_rules_to_case
-            case.custom_vars = apply_rules_to_case(case, rules)
+            means, stds = apply_rules_to_case(case, rules)
+            case.custom_vars = means
+            case.custom_vars_std = stds
         except Exception:
             traceback.print_exc()
             case.custom_vars = {}
+            case.custom_vars_std = {}
 
     def reapply_calc_rules_to_all_cases(self) -> int:
         """Apply current rules to every case; return number reprocessed."""

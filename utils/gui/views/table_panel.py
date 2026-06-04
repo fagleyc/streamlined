@@ -437,10 +437,24 @@ class TablePanel(QWidget):
             ("P_tot", f"P_tot [{labels.pressure}]"),
         ]
 
+        # Custom calculator columns - one per unique custom variable
+        # name across all loaded cases.  Custom variables are
+        # dimensionless / user-defined so we don't add a unit suffix.
+        custom_columns = []
+        seen_custom = set()
+        for c in self.model.cases:
+            cv = getattr(c, 'custom_vars', None) or {}
+            for name in cv.keys():
+                if name not in seen_custom:
+                    seen_custom.add(name)
+                    custom_columns.append((f'custom:{name}', name))
+
         # Build column list based on checkbox
         self._columns = base_columns + force_columns + moment_columns + element_columns
         if self.chk_tunnel_conditions.isChecked():
             self._columns = self._columns + tunnel_columns
+        # Append custom columns last so they don't shift built-ins
+        self._columns = self._columns + custom_columns
 
         self.table.setColumnCount(len(self._columns))
         self.table.setHorizontalHeaderLabels([col[1] for col in self._columns])
@@ -602,6 +616,16 @@ class TablePanel(QWidget):
         T = _sort(case.temperatures) if len(case.temperatures) > 0 else None
         Ptot = _sort(case.total_pressures) if len(case.total_pressures) > 0 else None
 
+        # Pre-sort custom variables to the same row order so columns
+        # line up.  Missing values for a case yield NaN per row.
+        custom_sorted: dict = {}
+        case_custom = getattr(case, 'custom_vars', None) or {}
+        for name, arr in case_custom.items():
+            try:
+                custom_sorted[name] = _sort(arr)
+            except Exception:
+                custom_sorted[name] = None
+
         include_tunnel = self.chk_tunnel_conditions.isChecked()
 
         for i in range(len(alphas)):
@@ -694,6 +718,18 @@ class TablePanel(QWidget):
                 if converter:
                     ptot_val = converter.convert_pressure(ptot_val)
                 row.append(ptot_val)
+
+            # Custom calculator columns (no unit conversion - they are
+            # user-defined and the user expression dictates the units)
+            for col_key, _label in self._columns:
+                if not col_key.startswith('custom:'):
+                    continue
+                name = col_key[len('custom:'):]
+                arr = custom_sorted.get(name)
+                if arr is None or i >= len(arr):
+                    row.append(float('nan'))
+                else:
+                    row.append(float(arr[i]))
 
             rows.append(row)
 
@@ -1389,6 +1425,20 @@ class TablePanel(QWidget):
                     # Add raw (per-point means in selected output units)
                     case_struct['raw'] = self._build_raw_dict(case)
 
+                    # Custom calculator outputs: per-point mean + std
+                    custom_means = getattr(case, 'custom_vars', None) or {}
+                    custom_stds = getattr(case, 'custom_vars_std', None) or {}
+                    if custom_means:
+                        case_struct['custom'] = {
+                            self._sanitize_matlab_name(name): np.asarray(arr)
+                            for name, arr in custom_means.items()
+                        }
+                    if custom_stds:
+                        case_struct['custom_std'] = {
+                            self._sanitize_matlab_name(name): np.asarray(arr)
+                            for name, arr in custom_stds.items()
+                        }
+
                     # Add unsteady (time-series) data if requested
                     if self.chk_include_unsteady.isChecked():
                         daq = getattr(case, 'daq', None)
@@ -1541,6 +1591,29 @@ class TablePanel(QWidget):
                                 raw_grp.create_dataset(k, data=v)
                             else:
                                 raw_grp.attrs[k] = v
+
+                        # Custom calculator outputs: means and stds
+                        custom_means = getattr(
+                            case, 'custom_vars', None) or {}
+                        custom_stds = getattr(
+                            case, 'custom_vars_std', None) or {}
+                        if custom_means:
+                            cust_grp = case_grp.create_group('custom')
+                            for name, arr in custom_means.items():
+                                try:
+                                    cust_grp.create_dataset(
+                                        name, data=np.asarray(arr))
+                                except Exception:
+                                    pass
+                        if custom_stds:
+                            cust_std_grp = case_grp.create_group(
+                                'custom_std')
+                            for name, arr in custom_stds.items():
+                                try:
+                                    cust_std_grp.create_dataset(
+                                        name, data=np.asarray(arr))
+                                except Exception:
+                                    pass
 
                         # Unsteady (time-series) data sub-group
                         if include_unsteady:

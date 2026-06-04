@@ -391,11 +391,14 @@ def evaluate_rule_on_point(rule_expression: str,
         return None
 
 
-def apply_rules_to_case(case, rules: List[CalcRule]) -> Dict[str, np.ndarray]:
+def apply_rules_to_case(case, rules: List[CalcRule]
+                         ) -> Tuple[Dict[str, np.ndarray],
+                                    Dict[str, np.ndarray]]:
     """
-    Evaluate each enabled rule on each test point and return a dict
-    of {output_name: per-point-mean array}.  The array shape matches
-    case.alphas (1-D flat or 2-D grid).
+    Evaluate each enabled rule on each test point and return two
+    parallel dicts: one of per-point MEAN arrays and one of per-point
+    STD-DEV arrays.  Both arrays are shaped to match case.alphas (1-D
+    flat or 2-D grid).
 
     Parameters
     ----------
@@ -406,23 +409,25 @@ def apply_rules_to_case(case, rules: List[CalcRule]) -> Dict[str, np.ndarray]:
 
     Returns
     -------
-    dict[str, np.ndarray]
-        Output variable name -> per-point mean array shaped to match
-        case.alphas.  Failed evaluations produce NaN arrays.
+    (means, stds) : tuple of dict[str, np.ndarray]
+        means: variable name -> per-point mean array (shape == case.alphas.shape)
+        stds:  variable name -> per-point std array  (same shape)
+        Failed evaluations produce NaN entries.
     """
-    out: Dict[str, np.ndarray] = {}
+    means_out: Dict[str, np.ndarray] = {}
+    stds_out: Dict[str, np.ndarray] = {}
     if not case or not case.has_data:
-        return out
+        return means_out, stds_out
 
     daq = getattr(case, 'daq', None)
     red = getattr(daq, 'red', None) if daq is not None else None
     if not red:
-        return out
+        return means_out, stds_out
 
     # Discover available variables from the first point
     av_vars = available_variables(case)
     if not av_vars:
-        return out
+        return means_out, stds_out
 
     target_shape = case.alphas.shape
     sort_idx = None
@@ -433,35 +438,42 @@ def apply_rules_to_case(case, rules: List[CalcRule]) -> Dict[str, np.ndarray]:
         except Exception:
             sort_idx = None
 
+    def _shape_to_grid(flat):
+        if (sort_idx is not None and sort_idx.size > 0
+                and len(flat) >= sort_idx.size):
+            try:
+                sorted_flat = flat[sort_idx]
+            except Exception:
+                sorted_flat = flat
+        else:
+            sorted_flat = flat
+        try:
+            if target_shape != sorted_flat.shape:
+                return sorted_flat.reshape(target_shape)
+            return sorted_flat
+        except ValueError:
+            return sorted_flat
+
     for rule in rules:
         for output_name, expr in expand_rule(rule, av_vars):
-            scalars = []
+            mean_scalars = []
+            std_scalars = []
             for pt in red:
                 arr = evaluate_rule_on_point(expr, pt)
                 if arr is None or arr.size == 0:
-                    scalars.append(np.nan)
+                    mean_scalars.append(np.nan)
+                    std_scalars.append(np.nan)
                 else:
-                    scalars.append(float(np.mean(arr)))
-            flat = np.asarray(scalars, dtype=float)
-
-            # Apply sort_idx and reshape to match case grid
-            if (sort_idx is not None and sort_idx.size > 0
-                    and len(flat) >= sort_idx.size):
-                try:
-                    sorted_flat = flat[sort_idx]
-                except Exception:
-                    sorted_flat = flat
-            else:
-                sorted_flat = flat
-
-            try:
-                if target_shape != sorted_flat.shape:
-                    out[output_name] = sorted_flat.reshape(target_shape)
-                else:
-                    out[output_name] = sorted_flat
-            except ValueError:
-                out[output_name] = sorted_flat
-    return out
+                    mean_scalars.append(float(np.mean(arr)))
+                    # std on a single-sample point is 0 (not NaN), which
+                    # is the right behavior for shading width.
+                    std_scalars.append(float(np.std(arr))
+                                        if arr.size > 1 else 0.0)
+            means_out[output_name] = _shape_to_grid(
+                np.asarray(mean_scalars, dtype=float))
+            stds_out[output_name] = _shape_to_grid(
+                np.asarray(std_scalars, dtype=float))
+    return means_out, stds_out
 
 
 def expanded_output_names(rules: List[CalcRule],
