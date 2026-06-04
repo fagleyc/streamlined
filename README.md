@@ -1,7 +1,7 @@
 # Streamlined - Wind Tunnel Data Reduction Package
 
 **Author: C. Fagley**
-**Version: 1.2.4**
+**Version: 1.2.7**
 
 ## Executive Summary
 
