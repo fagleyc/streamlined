@@ -482,11 +482,25 @@ class MainWindow(QMainWindow):
             except Exception:
                 available = []
 
+        def _refresh_vars():
+            """Re-scan available variables from whatever case is now loaded."""
+            case_now = None
+            for c in self.model.cases:
+                if c.has_data:
+                    case_now = c
+                    break
+            try:
+                from utils.windtunnel.calculator import available_variables
+                return available_variables(case_now)
+            except Exception:
+                return []
+
         dialog = CalculatorDialog(
             self,
             rules=self.model.calc_rules,
             available_vars=available,
             preview_case=preview_case,
+            refresh_callback=_refresh_vars,
         )
         if dialog.exec():
             new_rules = dialog.get_rules()

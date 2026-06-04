@@ -103,6 +103,13 @@ def reduce_single_point(raw_on: Dict[str, np.ndarray],
     """
     result = ReducedDataPoint()
 
+    # Preserve the raw channel data so downstream consumers
+    # (custom calculator, time-history viewer, etc.) can access any
+    # DAQ channel by name.  Dict-level copy is cheap because the
+    # numpy array values are shared by reference.
+    result.air_on = dict(raw_on) if raw_on else {}
+    result.air_off = dict(raw_off) if raw_off else {}
+
     # Store position data from AirON
     result.alpha = raw_on.get('Alpha', np.array([0.0]))
     result.beta = raw_on.get('Beta', np.array([0.0]))
