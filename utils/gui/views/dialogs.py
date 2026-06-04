@@ -1311,6 +1311,72 @@ class AboutDialog(QDialog):
             </ul>
 
             <h3>Changelog</h3>
+            <p><b>v1.2.7</b></p>
+            <ul>
+                <li><b>Modular custom data calculator</b> &mdash; new
+                    Edit &rarr; Custom Calculator dialog lets you
+                    define ParaView-style expression rules that
+                    derive new variables from any reduced data.
+                    Template expansion: <code>Cp{i}</code> with range
+                    <code>auto:p{i}</code> or <code>1..32</code>
+                    generates Cp1..Cp32 from a single rule</li>
+                <li>Calculator UI:  category dropdown + variable
+                    dropdown + Insert button for one-click variable
+                    insertion; math function and operator buttons
+                    (sin/cos/sqrt/mean/std/clip/where/min/max/pi etc.
+                    + - * / ** ( ) , ); live preview with per-rule
+                    success/fail diagnostics; Browse All... dialog
+                    listing every variable with its sample mean</li>
+                <li>Geometric parameters in expressions: MAC, span,
+                    ref_area, MRC_x, MRC_y, MRC_z exposed as
+                    scalars from the case&apos;s assigned geometry</li>
+                <li>Custom variables flow through plots (with
+                    &plusmn;1&sigma; sigma shading), Data Table
+                    columns, MAT / HDF5 / Excel / CSV exports, and
+                    the Time History viewer</li>
+                <li>Variable name cleanup: one canonical name per
+                    concept (Q, P_static, Mach, U_inf, rho, &hellip;)
+                    plus a single physics alias (q_inf, p_inf).
+                    Dropped redundant case variants</li>
+                <li>Pdiff, Ptot, Temp reclassified from Balance
+                    Channels to Tunnel Conditions</li>
+                <li>Variable browser categorizes by Pressure Ports,
+                    Balance Channels, Tunnel Conditions, BRF Forces,
+                    WRF Forces, Coefficients, Geometry, Position /
+                    Time, Constants</li>
+                <li><b>MAT / HDF5 export restructured</b> by category:
+                    <code>case.Tunnel_Conditions.Q</code>,
+                    <code>case.BRF_Forces.Fx</code>,
+                    <code>case.Pressure_Ports.p0</code>,
+                    <code>case.Geometry.MAC</code>,
+                    <code>case.Raw.&lt;every raw DAQ channel&gt;</code>,
+                    <code>case.Custom.&lt;rules&gt;</code>,
+                    <code>case.Custom_std.&lt;rules&gt;</code>.
+                    Downstream MATLAB scripts referencing the old
+                    flat names will need to update field paths</li>
+                <li><b>Bug fix:</b> Cma vs Alpha now correctly
+                    updates when the user changes the MRC shift.
+                    Previously the Geometry dialog updated the
+                    model but didn&apos;t re-reduce affected cases,
+                    so CPitch (and therefore Cma) stayed stale</li>
+                <li><b>Bug fix:</b> reduce_single_point now
+                    populates ReducedDataPoint.air_on / air_off
+                    with the full raw DAQ dictionary.  Previously
+                    they were declared but never assigned, hiding
+                    pressure ports and other channels from the
+                    calculator and time history viewer</li>
+                <li>Tunnel Corrections dialog defaults to the SWT
+                    36" x 36" test section (area 1296 in&sup2;)</li>
+                <li>Custom Y dropdown stacked below Plot Type</li>
+                <li>Data Table tab: redundant per-format export
+                    buttons removed; use File &rarr; Export</li>
+                <li>Export dialog: data-to-include moved into a
+                    collapsible Advanced section; format order is
+                    Excel, MATLAB, HDF5, CSV, COE</li>
+                <li>COE filenames always include a lowercase beta
+                    tag (e.g. case_b0.COE, case_b10.COE) for
+                    self-describing multi-beta exports</li>
+            </ul>
             <p><b>v1.2.6</b></p>
             <ul>
                 <li>Stability derivative plots (Cma, CLa, Static Margin,
