@@ -182,6 +182,27 @@ class TimeHistoryPanel(QWidget):
                 val = getattr(pt.tunnel, attr, None)
                 if val is not None and len(val) > 0:
                     self.cmb_channel.addItem(f"Tunnel: {attr}", ('tunnel', attr))
+            # User-defined calculator rules expand into one or more
+            # named time-series accessible here.  Each entry stores
+            # the EXPRESSION (already expanded) so we can re-evaluate
+            # on the current point on demand.
+            rules = getattr(self.model, 'calc_rules', None) or []
+            if rules:
+                try:
+                    from utils.windtunnel.calculator import (
+                        expand_rule, available_variables)
+                    av = available_variables(self._get_selected_case())
+                    seen = set()
+                    for rule in rules:
+                        for name, expr in expand_rule(rule, av):
+                            if name in seen:
+                                continue
+                            seen.add(name)
+                            self.cmb_channel.addItem(
+                                f"Custom: {name}",
+                                ('custom', (name, expr)))
+                except Exception:
+                    pass
         self.cmb_channel.blockSignals(False)
         self._updating = False
         self._update_plot()
@@ -246,6 +267,21 @@ class TimeHistoryPanel(QWidget):
                 signal = elems_on[:, col_idx]
         elif source == 'tunnel':
             signal = np.asarray(getattr(pt.tunnel, key, []))
+        elif source == 'custom':
+            # key is (output_name, expression)
+            try:
+                name, expr = key
+                from utils.windtunnel.calculator import evaluate_timeseries
+                result = evaluate_timeseries(expr, pt)
+                if result is None:
+                    return None
+                signal = np.asarray(result, dtype=float)
+            except Exception:
+                return None
+            if len(signal) == 0 or len(time) == 0:
+                return None
+            n = min(len(time), len(signal))
+            return time[:n], signal[:n], f"Custom: {name}"
         else:
             return None
         if len(signal) == 0 or len(time) == 0:

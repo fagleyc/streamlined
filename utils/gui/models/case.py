@@ -168,6 +168,11 @@ class TestCase:
         default_factory=lambda: np.array([]))
     blockage_method: str = 'none'
 
+    # User-defined calculator results: variable name -> per-point mean
+    # array reshaped to match self.alphas.shape.  Populated by
+    # DataController._apply_calc_rules_to_case after reduction.
+    custom_vars: Dict[str, np.ndarray] = field(default_factory=dict)
+
     # Tunnel conditions object
     tunnel_conditions: TunnelConditions = field(default_factory=TunnelConditions)
 

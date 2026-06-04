@@ -937,6 +937,56 @@ class DataController(QObject):
         """Load and process data from a single directory (legacy support)."""
         self.load_data_directories([directory])
 
+    # ------------------------------------------------------------------
+    # Calculator rule serialization + application
+    # ------------------------------------------------------------------
+
+    def _serialize_calc_rules(self) -> list:
+        try:
+            from utils.windtunnel.calculator import rules_to_dicts
+            return rules_to_dicts(getattr(self.model, 'calc_rules', []) or [])
+        except Exception:
+            return []
+
+    def _deserialize_calc_rules(self, raw_list) -> None:
+        try:
+            from utils.windtunnel.calculator import rules_from_dicts
+            self.model.calc_rules = rules_from_dicts(raw_list or [])
+        except Exception:
+            self.model.calc_rules = []
+
+    def _apply_calc_rules_to_case(self, case: TestCase) -> None:
+        """
+        Run every active calculator rule on `case` and populate
+        case.custom_vars with the per-point mean arrays reshaped to
+        the case's alpha/beta grid.  Safe to call repeatedly.
+        """
+        if not case.has_data:
+            return
+        rules = getattr(self.model, 'calc_rules', None) or []
+        if not rules:
+            case.custom_vars = {}
+            return
+        try:
+            from utils.windtunnel.calculator import apply_rules_to_case
+            case.custom_vars = apply_rules_to_case(case, rules)
+        except Exception:
+            traceback.print_exc()
+            case.custom_vars = {}
+
+    def reapply_calc_rules_to_all_cases(self) -> int:
+        """Apply current rules to every case; return number reprocessed."""
+        n = 0
+        for case in list(self.model.cases):
+            if not case.has_data:
+                continue
+            self._apply_calc_rules_to_case(case)
+            self.model.case_updated.emit(case.id)
+            n += 1
+        if n:
+            self.model.cases_changed.emit()
+        return n
+
     def _apply_blockage_to_case(self, case: TestCase) -> None:
         """
         Compute blockage-corrected arrays for a case based on the
@@ -1012,6 +1062,8 @@ class DataController(QObject):
         """Handle a processed case."""
         # Apply blockage corrections (if enabled) before adding to model
         self._apply_blockage_to_case(case)
+        # Evaluate any active custom calculator rules
+        self._apply_calc_rules_to_case(case)
         self.model.add_case(case)
 
     def process_data(self):
@@ -1100,6 +1152,8 @@ class DataController(QObject):
 
             # Re-apply blockage correction (if any) with refreshed data
             self._apply_blockage_to_case(case)
+            # Re-evaluate any custom calculator rules
+            self._apply_calc_rules_to_case(case)
 
             self.model.case_updated.emit(case_id)
             self.model.cases_changed.emit()
@@ -1410,6 +1464,7 @@ class DataController(QObject):
                 },
                 'blockage': getattr(
                     self.model, 'blockage_config', {'method': 'none'}),
+                'calc_rules': self._serialize_calc_rules(),
                 'directories': {
                     'last_data': self.settings.last_data_directory,
                     'last_calibration': self.settings.last_calibration_directory,
@@ -1548,6 +1603,9 @@ class DataController(QObject):
             # Tunnel blockage / wall-effect configuration
             self.model.blockage_config = config.get(
                 'blockage', {'method': 'none'})
+
+            # Calculator rules
+            self._deserialize_calc_rules(config.get('calc_rules', []))
 
             # Load directories
             dir_config = config.get('directories', {})
