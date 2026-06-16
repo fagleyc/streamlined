@@ -309,11 +309,14 @@ class ProcessWorker(QObject):
     message = pyqtSignal(str, str)           # text, level ('info'/'ok'/'error')
     finished = pyqtSignal(int, int)          # n_ok, n_failed
 
-    def __init__(self, files: List[Path], alpha_shift: float,
+    def __init__(self, files: List[Tuple[Path, Path]], alpha_shift: float,
                  beta_shift: float, overwrite: bool,
                  out_dir: Optional[Path], update_filename: bool,
                  suffix: str):
         super().__init__()
+        # files is a list of (src_path, rel_path) where rel_path is the
+        # file's path relative to its add-root (used to mirror the
+        # subdirectory tree under a new output folder).
         self.files = files
         self.alpha_shift = alpha_shift
         self.beta_shift = beta_shift
@@ -330,7 +333,7 @@ class ProcessWorker(QObject):
         total = len(self.files)
         n_ok = 0
         n_failed = 0
-        for i, src in enumerate(self.files):
+        for i, (src, rel) in enumerate(self.files):
             if self._cancelled:
                 self.message.emit("Cancelled by user.", 'error')
                 break
@@ -348,13 +351,19 @@ class ProcessWorker(QObject):
                 elif self.overwrite:
                     dst = src.parent / f"{stem}.tdms"
                 else:
-                    # New folder, mirror just the filename (flat)
-                    dst = (self.out_dir or src.parent) / f"{stem}.tdms"
+                    # New folder: mirror the file's subdirectory tree
+                    # (rel.parent) under the chosen output folder.
+                    base = self.out_dir or src.parent
+                    dst = base / rel.parent / f"{stem}.tdms"
 
                 n_a, n_b = process_file(
                     src, dst, self.alpha_shift, self.beta_shift)
 
-                rel = dst.name
+                # Show the relative destination so subfolders are visible
+                if self.overwrite:
+                    shown = dst.name
+                else:
+                    shown = str((rel.parent / f"{stem}.tdms"))
                 detail = []
                 if n_a:
                     detail.append(f"{n_a} alpha")
@@ -363,7 +372,7 @@ class ProcessWorker(QObject):
                 ch_info = (", ".join(detail) + " ch" if detail
                            else "no alpha/beta channels found")
                 self.message.emit(
-                    f"OK  {src.name}  ->  {rel}   ({ch_info})", 'ok')
+                    f"OK  {src.name}  ->  {shown}   ({ch_info})", 'ok')
                 n_ok += 1
             except Exception as e:
                 traceback.print_exc()
@@ -384,7 +393,11 @@ class ShiftToolWindow(QWidget):
         super().__init__()
         self.setWindowTitle(f"{APP_NAME}  v{APP_VERSION}")
         self.resize(760, 720)
-        self._files: List[Path] = []
+        # Each entry is (src_path, rel_path).  rel_path is the file's
+        # path relative to its add-root, used to mirror the directory
+        # tree when writing to a new output folder.  For individually
+        # added files rel_path is just the bare filename.
+        self._files: List[Tuple[Path, Path]] = []
         self._thread: Optional[QThread] = None
         self._worker: Optional[ProcessWorker] = None
         self._setup_ui()
@@ -485,6 +498,15 @@ class ShiftToolWindow(QWidget):
         nf_row.addWidget(self.btn_browse_out)
         out_layout.addLayout(nf_row)
 
+        struct_note = QLabel(
+            "Subdirectory structure of folders added recursively is "
+            "recreated under the output folder.")
+        struct_note.setStyleSheet(
+            f"color: {_TEXT_SECONDARY}; font-size: 9pt;")
+        struct_note.setWordWrap(True)
+        struct_note.setContentsMargins(26, 0, 0, 0)
+        out_layout.addWidget(struct_note)
+
         self.chk_update_name = QCheckBox(
             "Update Alpha_/Beta_ values in the filename")
         self.chk_update_name.setToolTip(
@@ -534,13 +556,14 @@ class ShiftToolWindow(QWidget):
 
     # ---- file management ----
 
-    def _add_paths(self, paths: List[Path]):
-        existing = set(self._files)
+    def _add_paths(self, pairs: List[Tuple[Path, Path]]):
+        """Add (src_path, rel_path) pairs, de-duplicating by src_path."""
+        existing = {src for src, _ in self._files}
         added = 0
-        for p in paths:
-            if p.suffix.lower() == '.tdms' and p not in existing:
-                self._files.append(p)
-                existing.add(p)
+        for src, rel in pairs:
+            if src.suffix.lower() == '.tdms' and src not in existing:
+                self._files.append((src, rel))
+                existing.add(src)
                 added += 1
         self._refresh_list()
         if added:
@@ -548,8 +571,12 @@ class ShiftToolWindow(QWidget):
 
     def _refresh_list(self):
         self.list_files.clear()
-        for p in self._files:
-            self.list_files.addItem(QListWidgetItem(str(p)))
+        for src, rel in self._files:
+            # Show the relative path so the mirrored subfolder structure
+            # is visible; full path available as a tooltip.
+            item = QListWidgetItem(str(rel))
+            item.setToolTip(str(src))
+            self.list_files.addItem(item)
         n = len(self._files)
         self.lbl_count.setText(f"{n} file{'s' if n != 1 else ''}")
 
@@ -558,7 +585,9 @@ class ShiftToolWindow(QWidget):
             self, "Select TDMS files", "",
             "TDMS Files (*.tdms);;All Files (*.*)")
         if files:
-            self._add_paths([Path(f) for f in files])
+            # Individually added files have no subdirectory context;
+            # rel_path is just the bare filename (written flat).
+            self._add_paths([(Path(f), Path(Path(f).name)) for f in files])
 
     def _add_folder(self):
         folder = QFileDialog.getExistingDirectory(
@@ -573,7 +602,16 @@ class ShiftToolWindow(QWidget):
         if not found:
             self._log(f"No .tdms files found in {folder}.", 'error')
             return
-        self._add_paths(found)
+        # rel_path is each file relative to the chosen folder, so the
+        # subdirectory tree under `folder` is mirrored on output.
+        pairs = []
+        for f in found:
+            try:
+                rel = f.relative_to(base)
+            except ValueError:
+                rel = Path(f.name)
+            pairs.append((f, rel))
+        self._add_paths(pairs)
 
     def _remove_selected(self):
         rows = sorted((self.list_files.row(i)
