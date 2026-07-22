@@ -38,6 +38,98 @@ class WRFForces:
     Yaw: np.ndarray = field(default_factory=lambda: np.array([]))
 
 
+# Resolved external-balance (ATE) channels: wind-axis loads in
+# engineering units, NOT bridge volts. Order matches WRFForces fields.
+EXTERNAL_LOAD_CHANNELS = ('Lift', 'Drag', 'Side', 'Roll', 'Pitch', 'Yaw')
+
+# Bridge channels that mark raw internal-balance (volts) data.
+_BRIDGE_CHANNELS = ('N1', 'N2', 'Y1', 'Y2',
+                    'AftPitch', 'AftYaw', 'FwdPitch', 'FwdYaw')
+
+
+def is_external_balance_data(raw_data: Dict[str, Any]) -> bool:
+    """
+    True when a raw channel dict carries resolved external-balance
+    (ATE) loads rather than internal-balance bridge volts.
+
+    Prefers an explicit ``balance_type`` marker (carried through from
+    the file's ``RawData.properties`` by callers that propagate it) and
+    falls back to structural detection: resolved load channels present
+    with no bridge channels.
+
+    Parameters
+    ----------
+    raw_data : dict
+        Raw channel dictionary as produced by the data_io readers.
+
+    Returns
+    -------
+    bool
+        True for external-balance (already-resolved) data.
+
+    Notes
+    -----
+    Also accepts a ``RawData`` object directly (its ``balance_type``
+    property / ``data`` dict are used).
+    """
+    if not hasattr(raw_data, 'get'):                  # RawData object
+        marker = getattr(raw_data, 'balance_type', None)
+        raw_data = getattr(raw_data, 'data', {}) or {}
+    else:
+        marker = raw_data.get('balance_type')
+    if isinstance(marker, bytes):
+        marker = marker.decode('utf-8', errors='replace')
+    if isinstance(marker, str):
+        return marker.strip().lower() == 'external'
+
+    has_loads = all(ch in raw_data for ch in ('Lift', 'Drag', 'Pitch'))
+    has_bridges = any(ch in raw_data for ch in _BRIDGE_CHANNELS)
+    return has_loads and not has_bridges
+
+
+def wrf_from_resolved_loads(raw_data: Dict[str, np.ndarray],
+                            n_samples: Optional[int] = None) -> WRFForces:
+    """
+    Build WRFForces directly from resolved external-balance channels.
+
+    ATE external-balance files already carry wind-axis loads (Lift,
+    Drag, Side and Roll, Pitch, Yaw moments) in engineering units, so
+    neither the bridge-to-force calibration (:func:`calc_brf_forces`)
+    nor the body-to-wind rotation (:func:`calc_wrf_forces`) applies —
+    the channels pass straight through under their in-file names.
+
+    Parameters
+    ----------
+    raw_data : dict
+        Raw channel dictionary containing the resolved load channels.
+    n_samples : int, optional
+        Sample count used to zero-fill missing channels; inferred from
+        the first available load channel when omitted.
+
+    Returns
+    -------
+    WRFForces
+        Wind reference frame loads, passed through unmodified.
+    """
+    if n_samples is None:
+        for ch in EXTERNAL_LOAD_CHANNELS:
+            if ch in raw_data:
+                n_samples = len(np.atleast_1d(raw_data[ch]))
+                break
+        else:
+            n_samples = 0
+
+    wrf = WRFForces()
+    for ch in EXTERNAL_LOAD_CHANNELS:
+        value = raw_data.get(ch)
+        if value is None:
+            arr = np.zeros(n_samples)
+        else:
+            arr = np.atleast_1d(np.asarray(value, dtype=float))
+        setattr(wrf, ch, arr)
+    return wrf
+
+
 @dataclass
 class Geometry:
     """Model geometry reference values."""
@@ -114,7 +206,34 @@ def calc_brf_forces(raw_data: Dict[str, np.ndarray],
     For Moment configuration:
         - Forces are calculated from element differences
         - Moments are averages with MRC corrections
+
+    Raises
+    ------
+    ValueError
+        If ``raw_data`` carries resolved external-balance loads
+        (balance_type == 'external'): those channels are already forces
+        and moments, so pushing them through the volts-to-forces
+        calibration would silently corrupt them.
     """
+    if is_external_balance_data(raw_data):
+        raise ValueError(
+            "raw_data carries resolved external-balance loads "
+            "(Lift/Drag/... in engineering units), not bridge volts; "
+            "bridge-to-force calibration does not apply. Use "
+            "wrf_from_resolved_loads() to pass the loads through."
+        )
+
+    # Internal (sting) balance data is bridge volts: a fitted .vol
+    # balance calibration is mandatory. Fail with a clear message
+    # instead of an AttributeError deep in the math.
+    if cal is None or np.size(getattr(cal, 'coeffs', np.array([]))) == 0:
+        raise ValueError(
+            "internal-balance data (bridge volts) requires a fitted "
+            "balance calibration: load a .vol file (e.g. via "
+            "DAQ.cal_balance / read_vol_file + calc_coeffs) before "
+            "reducing."
+        )
+
     brf = BRFForces()
 
     # Get distance values

@@ -50,3 +50,7 @@ Config*/
 # Generated plot output directories
 brandt/*_plots/
 brandt/*plots/
+
+# Local scratch (not for the public repo)
+temp/
+Cp_test.json

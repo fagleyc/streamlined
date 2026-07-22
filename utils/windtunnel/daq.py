@@ -1,4 +1,4 @@
-"""
+﻿"""
 DAQ Class - Main Data Acquisition and Processing Class
 ======================================================
 
@@ -16,10 +16,11 @@ from .calibration import (
     BalanceCalibration, read_vol_file, read_pcf_file, calc_coeffs
 )
 from .data_io import (
-    read_tdms_file, find_data_files, classify_files_by_condition,
+    read_tdms_file, read_run_file, find_data_files,
+    classify_files_by_condition, copy_balance_markers,
     extract_alpha_beta_from_filename, export_to_csv
 )
-from .transforms import Geometry
+from .transforms import Geometry, is_external_balance_data
 from .reduction import (
     ReducedDataPoint, SteadyStateData,
     reduce_single_point, reduce_raw, reduce_steady_state,
@@ -270,8 +271,8 @@ class DAQ:
         conversions = {
             'IPS': (1.0, 1.0),          # already in inches, sq inches
             'FPS': (12.0, 144.0),       # feet to inches (1 ft = 12 in, 1 sq ft = 144 sq in)
-            'MKS': (39.3701, 1550.0031),  # meters to inches (1 m = 39.37 in, 1 m² = 1550 sq in)
-            'CGS': (0.3937, 0.155),     # cm to inches (1 cm = 0.3937 in, 1 cm² = 0.155 sq in)
+            'MKS': (39.3701, 1550.0031),  # meters to inches (1 m = 39.37 in, 1 mÂ² = 1550 sq in)
+            'CGS': (0.3937, 0.155),     # cm to inches (1 cm = 0.3937 in, 1 cmÂ² = 0.155 sq in)
         }
 
         cL, cS = conversions.get(units, (1.0, 1.0))
@@ -388,14 +389,18 @@ class DAQ:
     def load_data_directory(self, directory: str,
                             pattern: str = '*.tdms') -> 'DAQ':
         """
-        Load all TDMS files from a directory.
+        Load all data files from a directory.
+
+        Files are dispatched on extension (TDMS, HDF5 .h5/.hdf5, or
+        MATLAB .mat) via :func:`read_run_file`; the default pattern
+        preserves the historical TDMS behavior.
 
         Parameters
         ----------
         directory : str
-            Directory containing TDMS files
+            Directory containing data files
         pattern : str
-            Glob pattern for file matching
+            Glob pattern for file matching (e.g. '*.tdms', '*.h5')
 
         Returns
         -------
@@ -415,9 +420,10 @@ class DAQ:
         for i, on_file in enumerate(air_on_sorted):
             raw_entry = {'AirOn': {}, 'AirOff': {}}
 
-            raw_on, _ = read_tdms_file(str(on_file))
+            raw_on, _ = read_run_file(str(on_file))
             raw_entry['AirOn'] = raw_on.data
             raw_entry['AirOn']['Time'] = raw_on.time
+            copy_balance_markers(raw_on, raw_entry['AirOn'])
 
             # Find matching air-off file
             alpha_on, beta_on = extract_alpha_beta_from_filename(str(on_file))
@@ -428,14 +434,13 @@ class DAQ:
 
                 # Check if alpha/beta match
                 if np.isclose(alpha_on, alpha_off, atol=0.5) and np.isclose(beta_on, beta_off, atol=0.5):
-                    raw_off, _ = read_tdms_file(str(off_file))
-                    raw_entry['AirOff'] = raw_off.data
-                    raw_entry['AirOff']['Time'] = raw_off.time
+                    raw_off, _ = read_run_file(str(off_file))
                 else:
                     # Use first AirOff file as tare
-                    raw_off, _ = read_tdms_file(str(air_off_sorted[0]))
-                    raw_entry['AirOff'] = raw_off.data
-                    raw_entry['AirOff']['Time'] = raw_off.time
+                    raw_off, _ = read_run_file(str(air_off_sorted[0]))
+                raw_entry['AirOff'] = raw_off.data
+                raw_entry['AirOff']['Time'] = raw_off.time
+                copy_balance_markers(raw_off, raw_entry['AirOff'])
 
             self.raw.append(raw_entry)
 
@@ -471,7 +476,13 @@ class DAQ:
         if not self.raw:
             raise ValueError("No raw data loaded. Call load_data_directory first.")
 
-        if not self.cal:
+        # External (ATE) balance data carries resolved loads and needs
+        # no .vol calibration; only internal (bridge-volt) data does.
+        needs_cal = any(
+            not is_external_balance_data(entry.get('AirOn') or {})
+            for entry in self.raw
+        )
+        if needs_cal and not self.cal:
             raise ValueError("No calibration loaded. Call cal_balance first.")
 
         if not self.geo:

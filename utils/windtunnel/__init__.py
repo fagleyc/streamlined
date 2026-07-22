@@ -38,7 +38,9 @@ from .calibration import (
     BalanceCalibration, PressureCalibration
 )
 from .data_io import (
-    read_tdms_file, find_data_files, export_to_csv, export_to_excel
+    read_tdms_file, read_hdf5_file, read_mat_file, read_run_file,
+    find_data_files, export_to_csv, export_to_excel,
+    classify_files_by_condition, copy_balance_markers
 )
 from .reduction import (
     reduce_raw, reduce_steady_state, to_dataframe,
@@ -54,7 +56,15 @@ from .coefficients import (
 from .transforms import (
     calc_brf_forces, calc_wrf_forces,
     subtract_tare, Geometry,
-    BRFForces, WRFForces
+    BRFForces, WRFForces,
+    is_external_balance_data, wrf_from_resolved_loads
+)
+from .external_balance import (
+    external_loads_to_ips, external_loads_in_si,
+    transfer_external_loads_to_mrc, build_load_matrix,
+    calc_uncertainty_ext_balance, calc_precision_uncertainty_cases,
+    EXTERNAL_CHANNEL_ORDER, EXTERNAL_CAL_BIAS, EXTERNAL_CAL_UNITS,
+    N_TO_LBF, NM_TO_INLB
 )
 from .plotting import (
     plot_coefficients, plot_drag_polar, plot_pitching_moment,
@@ -89,9 +99,14 @@ __all__ = [
 
     # Data I/O
     'read_tdms_file',
+    'read_hdf5_file',
+    'read_mat_file',
+    'read_run_file',
     'find_data_files',
     'export_to_csv',
     'export_to_excel',
+    'classify_files_by_condition',
+    'copy_balance_markers',
 
     # Reduction
     'reduce_raw',
@@ -119,6 +134,21 @@ __all__ = [
     'Geometry',
     'BRFForces',
     'WRFForces',
+    'is_external_balance_data',
+    'wrf_from_resolved_loads',
+
+    # External (ATE) balance
+    'external_loads_to_ips',
+    'external_loads_in_si',
+    'transfer_external_loads_to_mrc',
+    'build_load_matrix',
+    'calc_uncertainty_ext_balance',
+    'calc_precision_uncertainty_cases',
+    'EXTERNAL_CHANNEL_ORDER',
+    'EXTERNAL_CAL_BIAS',
+    'EXTERNAL_CAL_UNITS',
+    'N_TO_LBF',
+    'NM_TO_INLB',
 
     # Plotting
     'plot_coefficients',

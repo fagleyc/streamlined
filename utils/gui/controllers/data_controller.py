@@ -27,7 +27,8 @@ try:
     from utils.windtunnel.calibration import read_vol_file, read_pcf_file, calc_coeffs
     from utils.windtunnel.data_io import (
         parse_tdms_filename, group_files_by_configuration,
-        extract_alpha_beta_from_filename, read_tdms_file, FileInfo
+        extract_alpha_beta_from_filename, read_run_file,
+        copy_balance_markers, FileInfo
     )
     BACKEND_AVAILABLE = True
 except ImportError as e:
@@ -160,9 +161,15 @@ class ProcessingWorker(QRunnable):
             total_expected = 0
             dir_configs = []  # List of (directory, grouped_files) tuples
 
+            # Run files may be TDMS, HDF5 or MATLAB .mat (Freestream)
+            run_patterns = ("*.tdms", "*.h5", "*.hdf5", "*.mat")
+
             for directory in self.directories:
                 data_dir = Path(directory)
-                tdms_files = list(data_dir.rglob("*.tdms") if self.recursive else data_dir.glob("*.tdms"))
+                tdms_files = sorted(
+                    f for pat in run_patterns
+                    for f in (data_dir.rglob(pat) if self.recursive
+                              else data_dir.glob(pat)))
 
                 if not tdms_files:
                     continue
@@ -177,8 +184,9 @@ class ProcessingWorker(QRunnable):
                 dir_configs.append((directory, data_dir.name, grouped))
 
             if total_expected == 0:
-                self.signals.error.emit("No Data Found",
-                                        f"No TDMS files found in selected directories")
+                self.signals.error.emit(
+                    "No Data Found",
+                    "No run files (.tdms/.h5/.mat) found in selected directories")
                 return
 
             self.signals.progress.emit(0, total_expected)
@@ -346,9 +354,10 @@ class ProcessingWorker(QRunnable):
             for i, on_info in enumerate(on_sorted):
                 raw_entry = {'AirOn': {}, 'AirOff': {}}
 
-                raw_on, _ = read_tdms_file(str(on_info.filepath))
+                raw_on, _ = read_run_file(str(on_info.filepath))
                 raw_entry['AirOn'] = raw_on.data
                 raw_entry['AirOn']['Time'] = raw_on.time
+                copy_balance_markers(raw_on, raw_entry['AirOn'])
 
                 # Find matching AirOff file by alpha/beta
                 matched = False
@@ -356,17 +365,19 @@ class ProcessingWorker(QRunnable):
                     for off_info in off_sorted:
                         if (np.isclose(on_info.alpha, off_info.alpha, atol=0.5) and
                                 np.isclose(on_info.beta, off_info.beta, atol=0.5)):
-                            raw_off, _ = read_tdms_file(str(off_info.filepath))
+                            raw_off, _ = read_run_file(str(off_info.filepath))
                             raw_entry['AirOff'] = raw_off.data
                             raw_entry['AirOff']['Time'] = raw_off.time
+                            copy_balance_markers(raw_off, raw_entry['AirOff'])
                             matched = True
                             break
 
                     if not matched:
                         # Fallback: use first AirOff as tare
-                        raw_off, _ = read_tdms_file(str(off_sorted[0].filepath))
+                        raw_off, _ = read_run_file(str(off_sorted[0].filepath))
                         raw_entry['AirOff'] = raw_off.data
                         raw_entry['AirOff']['Time'] = raw_off.time
+                        copy_balance_markers(raw_off, raw_entry['AirOff'])
 
                 daq.raw.append(raw_entry)
 
@@ -832,20 +843,21 @@ class DataController(QObject):
                 + "\n".join(directories) + "\n\nVerify the path and try again.")
             return
 
-        # Check at least one TDMS file exists in the directories
+        # Check at least one run file (TDMS/HDF5/MAT) exists in the directories
+        run_patterns = ("*.tdms", "*.h5", "*.hdf5", "*.mat")
         any_tdms = False
         for d in valid_dirs:
             dp = Path(d)
-            files = (list(dp.rglob("*.tdms")) if recursive
-                     else list(dp.glob("*.tdms")))
+            files = [f for pat in run_patterns
+                     for f in (dp.rglob(pat) if recursive else dp.glob(pat))]
             if files:
                 any_tdms = True
                 break
         if not any_tdms:
             search = "recursively" if recursive else "in the top level"
             self.error_occurred.emit(
-                "No TDMS Files Found",
-                f"No .tdms files were found {search} of:\n\n"
+                "No Run Files Found",
+                f"No .tdms/.h5/.mat run files were found {search} of:\n\n"
                 + "\n".join(valid_dirs)
                 + "\n\nIf the files are in subfolders, enable 'Recursive' on the Load Data dialog.")
             return

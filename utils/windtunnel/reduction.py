@@ -14,8 +14,10 @@ from .calibration import BalanceCalibration
 from .transforms import (
     Geometry, BRFForces, WRFForces,
     calc_brf_forces, calc_wrf_forces,
-    subtract_wrf_forces
+    subtract_wrf_forces,
+    is_external_balance_data, wrf_from_resolved_loads
 )
+from .external_balance import external_loads_to_ips
 from .coefficients import (
     AeroCoefficients, TunnelConditions,
     calc_tunnel_conditions, calc_aero_coeffs
@@ -119,14 +121,32 @@ def reduce_single_point(raw_on: Dict[str, np.ndarray],
     alpha_off = raw_off.get('Alpha', np.array([0.0]))
     beta_off = raw_off.get('Beta', np.array([0.0]))
 
-    # Calculate BRF forces for air-on and air-off
-    result.brf_on = calc_brf_forces(raw_on, cal, geo, balance_config)
-    result.brf_off = calc_brf_forces(raw_off, cal, geo, balance_config)
+    if is_external_balance_data(raw_on):
+        # External (ATE) balance: channels are already resolved
+        # wind-axis loads in engineering units — skip the
+        # volts->forces calibration and BRF->WRF rotation entirely and
+        # pass the loads straight through. BRF forces are left empty
+        # (there is no body-axis bridge data to reduce).
+        #
+        # Units: the Freestream ATE streams N / N*m while this chain
+        # works in lb / in-lb (deprecated/scripts/calc_coeffs.m
+        # 'External': Units = {'lb','lb','lb','in-lb','in-lb','in-lb'}),
+        # so SI-marked loads are converted first; unmarked dicts pass
+        # through untouched (legacy lb / in-lb behavior).
+        result.wrf_on = wrf_from_resolved_loads(
+            external_loads_to_ips(raw_on))
+        result.wrf_off = wrf_from_resolved_loads(
+            external_loads_to_ips(raw_off),
+            n_samples=len(result.wrf_on.Lift))
+    else:
+        # Calculate BRF forces for air-on and air-off
+        result.brf_on = calc_brf_forces(raw_on, cal, geo, balance_config)
+        result.brf_off = calc_brf_forces(raw_off, cal, geo, balance_config)
 
-    # Calculate WRF forces - CRITICAL: each uses its OWN alpha/beta!
-    # This is essential for proper tare subtraction when tare is at different angle
-    result.wrf_on = calc_wrf_forces(result.brf_on, result.alpha, result.beta)
-    result.wrf_off = calc_wrf_forces(result.brf_off, alpha_off, beta_off)
+        # Calculate WRF forces - CRITICAL: each uses its OWN alpha/beta!
+        # This is essential for proper tare subtraction when tare is at different angle
+        result.wrf_on = calc_wrf_forces(result.brf_on, result.alpha, result.beta)
+        result.wrf_off = calc_wrf_forces(result.brf_off, alpha_off, beta_off)
 
     # Subtract tare (air-off from air-on) in WRF
     result.wrf_aero = subtract_wrf_forces(result.wrf_on, result.wrf_off)
