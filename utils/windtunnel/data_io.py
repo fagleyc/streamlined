@@ -177,13 +177,25 @@ def _resample_channels_to_fastest(channels: Dict[str, Dict[str, Any]],
 
     # Resample all channels to the reference time
     for name, ch in channels.items():
+        n = len(ch['data'])
+        # Slow instruments (e.g. the ~4 Hz Heise indicator) can yield 0
+        # or 1 samples in a short acquisition — interp1d needs >= 2
+        # points (cubic needs >= 4), so degrade gracefully instead of
+        # crashing: constant-fill a single sample, NaN-fill an empty
+        # channel, and drop to linear when cubic lacks points.
+        if n == 0:
+            raw.data[name] = np.full(len(ref_time), np.nan)
+            continue
+        if n == 1:
+            raw.data[name] = np.full(len(ref_time), float(ch['data'][0]))
+            continue
+
         ch_dt = ch['time'][1] - ch['time'][0] if len(ch['time']) > 1 else min_dt
 
-        if not np.isclose(ch_dt, min_dt):
-            # Need to interpolate
+        if not np.isclose(ch_dt, min_dt) or n < len(ref_time):
             interp_func = interp1d(
                 ch['time'], ch['data'],
-                kind='cubic',
+                kind='cubic' if n >= 4 else 'linear',
                 bounds_error=False,
                 fill_value='extrapolate'
             )
