@@ -7,6 +7,9 @@ A professional PyQt6-based GUI for wind tunnel data analysis.
 Author: C. Fagley
 """
 
-__version__ = '1.2.7'
-__app_name__ = 'Streamlined'
-__author__ = 'C. Fagley'
+from .about import (  # noqa: F401
+    __version__, APP_NAME, AUTHOR, CONTACT, VERSION_HISTORY, SUMMARY,
+)
+
+__app_name__ = APP_NAME
+__author__ = AUTHOR

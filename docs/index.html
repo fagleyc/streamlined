@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Streamlined — Documentation</title>
+<style>
+  :root {
+    --bg: #1e1e1e; --bg-side: #252526; --bg-card: #2d2d30;
+    --border: #3e3e42; --text: #d4d4d4; --text-dim: #9d9d9d;
+    --accent: #4fc3f7; --accent2: #81c784; --warn: #ffb74d;
+    --code-bg: #1a1a1c;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: "Segoe UI", system-ui, sans-serif; line-height: 1.55;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  #sidebar {
+    position: fixed; top: 0; left: 0; bottom: 0; width: 250px;
+    background: var(--bg-side); border-right: 1px solid var(--border);
+    padding: 20px 14px; overflow-y: auto;
+  }
+  #sidebar h1 { font-size: 1.15em; margin: 0 0 2px; color: #fff; }
+  #sidebar .ver { color: var(--text-dim); font-size: 0.85em; margin-bottom: 14px; }
+  #sidebar ul { list-style: none; margin: 0; padding: 0; }
+  #sidebar li { margin: 1px 0; }
+  #sidebar a { display: block; padding: 4px 8px; border-radius: 4px; color: var(--text); font-size: 0.92em; }
+  #sidebar a:hover { background: var(--bg-card); text-decoration: none; }
+  #sidebar .sub a { padding-left: 22px; color: var(--text-dim); font-size: 0.87em; }
+  main { margin-left: 250px; padding: 30px 44px 80px; max-width: 950px; }
+  h2 { color: #fff; border-bottom: 1px solid var(--border); padding-bottom: 6px; margin-top: 44px; }
+  h3 { color: var(--accent); margin-top: 28px; }
+  h4 { color: var(--accent2); margin-bottom: 6px; }
+  code, pre {
+    font-family: Consolas, "Cascadia Mono", monospace; font-size: 0.9em;
+    background: var(--code-bg); border-radius: 4px;
+  }
+  code { padding: 1px 5px; }
+  pre { padding: 12px 14px; overflow-x: auto; border: 1px solid var(--border); }
+  pre code { padding: 0; background: none; }
+  table { border-collapse: collapse; margin: 12px 0; width: 100%; }
+  th, td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; font-size: 0.92em; }
+  th { background: var(--bg-card); color: #fff; }
+  tr:nth-child(even) td { background: #26262a; }
+  .note {
+    background: var(--bg-card); border-left: 3px solid var(--accent);
+    padding: 10px 14px; border-radius: 0 4px 4px 0; margin: 14px 0;
+  }
+  .warn { border-left-color: var(--warn); }
+  .kbd { border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px;
+         padding: 0 6px; background: var(--bg-card); font-family: Consolas, monospace; font-size: 0.88em; }
+</style>
+</head>
+<body>
+<nav id="sidebar">
+  <h1>Streamlined</h1>
+  <div class="ver">Wind Tunnel Data Reduction<br>v1.2.8 &mdash; C. Fagley</div>
+  <ul>
+    <li><a href="#overview">Overview</a></li>
+    <li><a href="#formats">Data Formats Read</a></li>
+    <li class="sub"><a href="#fmt-tdms">TDMS files</a></li>
+    <li class="sub"><a href="#fmt-h5">Freestream .h5 / .mat</a></li>
+    <li class="sub"><a href="#fmt-ext">External (ATE) balance</a></li>
+    <li class="sub"><a href="#fmt-cal">Calibration files (.vol / .PCF)</a></li>
+    <li><a href="#pipeline">Reduction Pipeline</a></li>
+    <li><a href="#gui">GUI Guide</a></li>
+    <li class="sub"><a href="#gui-menus">Menus</a></li>
+    <li class="sub"><a href="#gui-workflow">Typical workflow</a></li>
+    <li class="sub"><a href="#gui-plot">Plot view</a></li>
+    <li class="sub"><a href="#gui-table">Table / Time History</a></li>
+    <li class="sub"><a href="#gui-calc">Custom Calculator</a></li>
+    <li><a href="#export">Export</a></li>
+    <li><a href="#troubleshoot">Troubleshooting</a></li>
+  </ul>
+</nav>
+<main>
+
+<h2 id="overview">Overview</h2>
+<p><strong>Streamlined</strong> is a PyQt6 wind tunnel data reduction application that replaces
+the legacy MATLAB workflow. It reads raw force-balance runs, applies multi-order balance and
+pressure calibrations, transforms loads through the body (BRF) and wind (WRF) reference
+frames with proper tare subtraction, computes compressible-isentropic tunnel conditions, and
+non-dimensionalizes to aerodynamic coefficients. Every stage prior to the final steady-state
+average operates on <em>full time-series vectors</em> &mdash; the reported steady value is the
+temporal mean of fully reduced coefficient time histories, and the per-point standard
+deviation captures flow unsteadiness.</p>
+<ul>
+  <li>Validated MATLAB-to-Python parity (coefficients within machine precision)</li>
+  <li>Force and moment internal balance configurations, plus external (ATE) balance runs</li>
+  <li>Multi-geometry support with per-case assignment</li>
+  <li>Selectable blockage corrections and stability-derivative plots</li>
+  <li>Modular custom data calculator (ParaView-style expressions)</li>
+  <li>Export to CSV, Excel, HDF5, MAT, and legacy COE</li>
+</ul>
+<p>Launch with <code>python streamlined.py</code> from the project root. The technical
+reference (equations for every stage) is in <code>README.md</code>, available in-app via
+<em>Help &rarr; Technical Reference (README)</em>.</p>
+
+<h2 id="formats">Data Formats Read</h2>
+
+<h3 id="fmt-tdms">TDMS files (NI DAQ)</h3>
+<p>Raw runs from National Instruments DAQ systems, read with <code>nptdms</code>
+(<code>utils/windtunnel/data_io.py &rarr; read_tdms_file()</code>).</p>
+<pre><code>[AirState]_[Configuration]_Alpha_[value]_Beta_[value].tdms
+AirOn_F16check_Alpha_-2.0_Beta_0.0.tdms
+AirOff_F16check_Alpha_0.0_Beta_0.0.tdms</code></pre>
+<ul>
+  <li>All channels from all groups are extracted and resampled to the highest-rate
+      channel's time base via cubic interpolation.</li>
+  <li>Alpha/Beta come from DAQ channels, then TDMS group properties, then filename parsing
+      (in that priority order).</li>
+  <li>Expected channels: <code>N1 N2 Y1 Y2 Axial Roll Excitation Pdiff Ptot Temp Alpha Beta</code>
+      plus optional pressure ports <code>P001, P002, &hellip;</code></li>
+  <li>Files are classified Air-On / Air-Off automatically from the filename prefix.</li>
+</ul>
+
+<h3 id="fmt-h5">Freestream / Conductor run files (.h5 / .mat)</h3>
+<p>Streamlined also reads HDF5 and MATLAB run files written by the freestream suite
+(<code>read_hdf5_file()</code>, <code>read_mat_file()</code>; routing by extension in
+<code>read_data_file()</code>). These files are <em>self-describing</em>:</p>
+<table>
+  <tr><th>Marker</th><th>Meaning</th></tr>
+  <tr><td><code>balance_group</code></td><td>Which group holds balance data:
+      <code>StrainBook_0</code> (internal sting balance, bridge volts) or
+      <code>ATE_Balance</code> (external balance, resolved loads).</td></tr>
+  <tr><td><code>balance_type</code></td><td><code>internal</code> (needs .vol calibration via
+      <code>calc_brf_forces</code>) or <code>external</code> (channels already forces/moments).</td></tr>
+  <tr><td><code>load_units</code></td><td>External runs carry per-channel unit attributes
+      (freestream writes <code>N</code> / <code>N*m</code>); Streamlined converts to the
+      historical lb / in-lb chain automatically.</td></tr>
+  <tr><td><code>span_config</code></td><td><code>full</code> / <code>half</code> marker on
+      freestream mode&nbsp;2 files; carried through in file properties (no scaling applied,
+      matching the legacy pipeline).</td></tr>
+</table>
+<p>Filenames of the form <code>&hellip;_mach_0.30.h5</code> carry the Mach set point.
+If markers are absent, the balance type is inferred from which groups are present.</p>
+
+<h3 id="fmt-ext">External (ATE) balance handling</h3>
+<p><code>utils/windtunnel/external_balance.py</code> ports the MATLAB external-balance chain
+(<code>deprecated/scripts/calc_coeffs.m</code> 'External' case):</p>
+<ul>
+  <li>Channel order <code>Drag, Side, Lift, Roll, Pitch, Yaw</code> &mdash; already resolved
+      wind-axis loads, so no volts&rarr;forces calibration is applied.</li>
+  <li>Per-channel calibration bias values from the historical cal file are subtracted.</li>
+  <li>SI loads (N / N&middot;m from freestream) are converted to lb / in-lb via
+      <code>external_loads_to_ips()</code> before Q&middot;S normalization.</li>
+  <li>Tare uses the same mean-subtraction step as the internal path
+      (<code>subtract_wrf_forces</code>), preserving air-on dynamics.</li>
+  <li>Coefficients divide by <code>Q&middot;S</code> (forces) and <code>Q&middot;S&middot;C</code>
+      (all three moments use reference chord, matching the legacy chain); no MRC transfer is
+      applied to external loads.</li>
+  <li>External-balance bias / precision / total uncertainty is ported in
+      <code>calc_uncertainty_ext_balance()</code>.</li>
+</ul>
+
+<h3 id="fmt-cal">Calibration files</h3>
+<ul>
+  <li><strong>.vol</strong> &mdash; balance calibration ("Voltage Calibration File 3.1"):
+      balance description, max loads, moment-arm distances (dx1/dx2/dy1/dy2), and
+      positive/negative loading curves for each of the 6 channels. Fit types: Linear (6&times;6),
+      Quadratic (12&times;6), Cubic (18&times;6, default) least-squares matrices.
+      These files are produced by the balance_cal utility in the freestream suite.</li>
+  <li><strong>.PCF</strong> &mdash; pressure transducer calibration: slope (PSI/V) per
+      transducer (e.g. "220" differential, "690" total), excitation, units.</li>
+</ul>
+
+<h2 id="pipeline">Reduction Pipeline</h2>
+<p>Nine stages; stages 1&ndash;8 operate on full time-series (see README for the equations):</p>
+<table>
+  <tr><th>#</th><th>Stage</th><th>Source</th><th>What happens</th></tr>
+  <tr><td>1</td><td>Load &amp; resample</td><td><code>data_io.py</code></td>
+      <td>Read TDMS/h5/mat, resample all channels to a common time base.</td></tr>
+  <tr><td>2</td><td>Balance calibration</td><td><code>calibration.py</code></td>
+      <td>Parse .vol, zero-offset correct, normalize by excitation, least-squares fit
+      the calibration matrix (R&sup2; and RMSE per channel).</td></tr>
+  <tr><td>3</td><td>Apply calibration</td><td><code>transforms.py</code></td>
+      <td>V/V<sub>ex</sub> polynomial terms &times; matrix &rarr; element force
+      time-series (skipped for external balance).</td></tr>
+  <tr><td>4</td><td>BRF forces</td><td><code>transforms.py</code></td>
+      <td>Element sums/differences with moment arms and MRC shift &rarr;
+      Fx Fy Fz Mx My Mz. Force config (N1/N2/Y1/Y2) and moment config
+      (AftPitch/AftYaw/FwdPitch/FwdYaw) both supported.</td></tr>
+  <tr><td>5</td><td>WRF transform</td><td><code>transforms.py</code></td>
+      <td>Rotate by each dataset's <em>own</em> alpha/beta &rarr; Lift Drag Side
+      Roll Pitch Yaw.</td></tr>
+  <tr><td>6</td><td>Tare subtraction</td><td><code>transforms.py</code></td>
+      <td>Subtract the <em>mean</em> of each air-off WRF channel from the air-on
+      time-series (DC removal in WRF, correct at any model attitude).</td></tr>
+  <tr><td>7</td><td>Tunnel conditions</td><td><code>coefficients.py</code></td>
+      <td>Compressible isentropic Q, Mach, T<sub>static</sub>, rho, a, U<sub>&infin;</sub>;
+      Sutherland viscosity; Reynolds number. Thermocouple cal vintage
+      (0.1 V/&deg;C vs 0.1 V/&deg;F) auto-detected per sample.</td></tr>
+  <tr><td>8</td><td>Coefficients</td><td><code>coefficients.py</code></td>
+      <td>CL CD CY over Q&middot;S; Cl/Cn use span, Cm uses MAC. Cp for pressure ports.</td></tr>
+  <tr><td>9</td><td>Steady-state</td><td><code>reduction.py</code></td>
+      <td>Temporal mean per point (value) and std (unsteadiness); alpha/beta grid
+      organization.</td></tr>
+</table>
+<p>Downstream of the pipeline: stability derivatives (Cma, CLa, static margin, CYb, Cnb, Clb
+via central differences), drag-polar fits, Oswald efficiency, and selectable blockage
+corrections (Pope-Harper, Maskell, Glauert closed-section) from
+<em>Edit &rarr; Tunnel Corrections&hellip;</em></p>
+
+<h2 id="gui">GUI Guide</h2>
+
+<h3 id="gui-menus">Menus</h3>
+<table>
+  <tr><th>Menu</th><th>Contents</th></tr>
+  <tr><td>File</td><td>Load data directories, save/load configuration presets (JSON),
+      Export (<span class="kbd">Ctrl+Shift+E</span>).</td></tr>
+  <tr><td>Edit</td><td>Geometry, Calibration, Output Units, Tunnel Corrections,
+      Custom Calculator, Clear All Data.</td></tr>
+  <tr><td>View</td><td>Plot (<span class="kbd">Ctrl+1</span>),
+      Table (<span class="kbd">Ctrl+2</span>),
+      Time History (<span class="kbd">Ctrl+3</span>), Refresh Plot.</td></tr>
+  <tr><td>Help</td><td>Documentation (this page), Technical Reference (README),
+      About Streamlined (version and history).</td></tr>
+</table>
+
+<h3 id="gui-workflow">Typical workflow</h3>
+<ol>
+  <li><strong>Load calibrations</strong> &mdash; Edit &rarr; Calibration: pick the balance
+      .vol (choose Linear/Quadratic/Cubic and Force/Moment config) and pressure .PCF.
+      External-balance runs need no .vol.</li>
+  <li><strong>Define geometry</strong> &mdash; Edit &rarr; Geometry: MAC, span, reference
+      area, MRC offset, input units. Multiple named geometries supported; right-click a
+      case to assign one (re-reduction is automatic).</li>
+  <li><strong>Load data</strong> &mdash; File &rarr; Load Data: pick one or more run
+      directories; Air-On/Air-Off files are paired automatically.</li>
+  <li><strong>Process</strong> &mdash; the controller reduces every case through the
+      9-stage pipeline; failures are reported with actionable dialogs.</li>
+  <li><strong>Review</strong> &mdash; plots, data table, time history / FFT.</li>
+  <li><strong>Export</strong> &mdash; File &rarr; Export.</li>
+  <li><strong>Save the configuration</strong> as a JSON preset (relative paths) so the whole
+      setup reloads in one step.</li>
+</ol>
+
+<h3 id="gui-plot">Plot view</h3>
+<ul>
+  <li>Coefficient plots (CL/CD/Cm/L-D/CY/Cl/Cn vs alpha, drag polar, lateral vs beta,
+      stability derivatives) with multi-case overlay and a "Plot vs &beta;" toggle.</li>
+  <li>&plusmn;1&sigma; shading ("Show Std Dev"), alpha/beta multi-select filters,
+      legend/grid toggles, custom-variable Y axis.</li>
+  <li>Right-click a data point: view its time history or FFT.</li>
+  <li>Save Image opens an interactive export dialog: per-trace colors/markers/widths,
+      legend labels, fonts, axis limits, theme (White/Dark/Black/Transparent),
+      resolution &mdash; settings persist between sessions.</li>
+  <li>pyqtgraph is the fast interactive backend; matplotlib is the fallback.</li>
+</ul>
+
+<h3 id="gui-table">Table and Time History views</h3>
+<ul>
+  <li><strong>Data Table</strong>: all steady-state coefficients with optional tunnel-condition
+      columns; numeric sorting; export via File &rarr; Export.</li>
+  <li><strong>Time History</strong>: raw and reduced time-series per point with multi-case
+      overlay and FFT; element labels adapt to the balance config
+      (N1/N2/Y1/Y2 or AftPitch/AftYaw/FwdPitch/FwdYaw).</li>
+</ul>
+
+<h3 id="gui-calc">Custom Calculator</h3>
+<p>Edit &rarr; Custom Calculator defines expression rules that derive new variables from any
+reduced data (e.g. <code>Cp&#123;i&#125;</code> with range <code>auto:p&#123;i&#125;</code> expands to
+Cp1&hellip;Cp32 from one rule). Variables are browsable by category (Pressure Ports, Balance
+Channels, Tunnel Conditions, BRF/WRF Forces, Coefficients, Geometry, Position/Time,
+Constants); geometry scalars (MAC, span, ref_area, MRC) are available in expressions. Custom
+variables flow through plots, the table, exports, and the time-history viewer.</p>
+
+<h2 id="export">Export</h2>
+<table>
+  <tr><th>Format</th><th>Notes</th></tr>
+  <tr><td>CSV</td><td>One file per case.</td></tr>
+  <tr><td>Excel (.xlsx)</td><td>Multi-sheet workbook, one sheet per case with summary headers.</td></tr>
+  <tr><td>HDF5 (.h5)</td><td>Categorized structure per case
+      (<code>Tunnel_Conditions</code>, <code>BRF_Forces</code>, <code>Pressure_Ports</code>,
+      <code>Geometry</code>, <code>Raw</code>, <code>Custom</code>); optional unsteady
+      time-series; calibration/geometry metadata included.</td></tr>
+  <tr><td>MAT (.mat)</td><td>MATLAB structs mirroring the HDF5 categories.</td></tr>
+  <tr><td>COE</td><td>Legacy Reduce2 fixed-width format, one file per case per beta
+      (<code>case_b0.COE</code>); post-process with <code>coe_postprocess.py</code>.</td></tr>
+</table>
+
+<h2 id="troubleshoot">Troubleshooting</h2>
+<table>
+  <tr><th>Symptom</th><th>Cause / fix</th></tr>
+  <tr><td>"Invalid Calibration File" dialog</td>
+      <td>The .vol/.PCF is corrupt or the wrong format &mdash; re-export from balance_cal or
+      check that a .vol (not .PCF) was selected for the balance.</td></tr>
+  <tr><td>No files found when loading a directory</td>
+      <td>Runs must be .tdms, .h5, or .mat; TDMS names need the
+      <code>AirOn/AirOff&hellip;Alpha&hellip;Beta</code> convention. Pre-flight checks list
+      exactly what is missing.</td></tr>
+  <tr><td>Coefficients look wildly wrong at low speed</td>
+      <td>Q&middot;S floor kicks in at wind-off; check the .PCF slopes and that Pdiff/Ptot
+      channels are present.</td></tr>
+  <tr><td>Temperatures off by ~20&deg;</td>
+      <td>Thermocouple cal vintage mis-detected on unusual data; force it with
+      <code>temp_cal_mode='degC'</code> or <code>'degF'</code> on
+      <code>calc_tunnel_conditions()</code> / <code>reduce_raw()</code>.</td></tr>
+  <tr><td>Cma doesn't change after moving the MRC</td>
+      <td>Fixed in v1.2.7 &mdash; the Geometry dialog now re-reduces affected cases; update
+      if on an older build.</td></tr>
+  <tr><td>External-balance file reduces as internal (or vice versa)</td>
+      <td>Check the <code>balance_type</code> / <code>balance_group</code> markers in the run
+      file; files without markers are classified by which groups are present
+      (<code>ATE_Balance</code> vs <code>StrainBook_0</code>).</td></tr>
+  <tr><td>Old MATLAB scripts can't find export fields</td>
+      <td>v1.2.7 restructured MAT/HDF5 exports by category
+      (<code>case.Tunnel_Conditions.Q</code> etc.) &mdash; update field paths.</td></tr>
+  <tr><td>About dialog raised NameError</td>
+      <td>Fixed in v1.2.8 (changelog text in an f-string contained literal
+      <code>&#123;i&#125;</code> placeholders).</td></tr>
+</table>
+
+<p style="color: var(--text-dim); margin-top: 48px; font-size: 0.85em;">
+Streamlined v1.2.8 &mdash; Author: C. Fagley &mdash; casey.fagley@afacademy.af.edu</p>
+
+</main>
+</body>
+</html>

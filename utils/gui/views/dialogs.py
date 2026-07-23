@@ -1265,269 +1265,80 @@ class CalibrationDialog(QDialog):
 class AboutDialog(QDialog):
     """
     About dialog with application information.
+
+    Follows the shared ecosystem template: app name + version prominent,
+    one-paragraph summary, author/contact line, and a compact
+    version-history table.
+
+    Note: the changelog is intentionally built from
+    ``utils.gui.about.VERSION_HISTORY`` rather than inline HTML. A
+    previous revision embedded literal ``{i}`` placeholders inside an
+    f-string, which raised ``NameError`` on construction.
     """
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle(f"About {__app_name__}")
-        self.setFixedSize(500, 600)
+        self.setFixedSize(520, 560)
 
         self._setup_ui()
 
     def _setup_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setSpacing(16)
+        from ..about import VERSION_HISTORY, SUMMARY, AUTHOR, CONTACT
 
-        # Title
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+
+        # App name + version, prominent
         title = QLabel(__app_name__)
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title.setFont(QFont("Segoe UI", 18, QFont.Weight.Bold))
+        title.setFont(QFont("Segoe UI", 20, QFont.Weight.Bold))
         layout.addWidget(title)
 
-        # Version
         version = QLabel(f"Version {__version__}")
         version.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        version.setFont(QFont("Segoe UI", 11))
         version.setStyleSheet(f"color: {DarkTheme.TEXT_SECONDARY};")
         layout.addWidget(version)
 
-        # Description
-        desc = QTextBrowser()
-        desc.setOpenExternalLinks(True)
-        desc.setHtml(f"""
-        <div style="color: {DarkTheme.TEXT_PRIMARY}; font-family: 'Segoe UI'; line-height: 1.5;">
-            <p>A professional application for wind tunnel data reduction and aerodynamic
-            coefficient analysis.</p>
+        # One-paragraph summary
+        summary = QLabel(SUMMARY)
+        summary.setWordWrap(True)
+        summary.setAlignment(Qt.AlignmentFlag.AlignJustify)
+        summary.setStyleSheet(f"color: {DarkTheme.TEXT_PRIMARY};")
+        layout.addWidget(summary)
 
-            <h3>Features</h3>
-            <ul>
-                <li>Load and process TDMS data files</li>
-                <li>Apply force balance and pressure calibrations</li>
-                <li>Compute aerodynamic coefficients with &plusmn;1&sigma; uncertainty</li>
-                <li>Multiple geometry definitions with per-case assignment</li>
-                <li>Interactive plotting with alpha/beta filtering and std dev shading</li>
-                <li>Interactive save image dialog with theme, label, and trace customization</li>
-                <li>Time history and FFT analysis with multi-case overlay</li>
-                <li>Consolidated export to CSV/Excel/HDF5/MAT with extended data options</li>
-            </ul>
+        # Author / contact
+        author = QLabel(f"Author: {AUTHOR} \u2014 {CONTACT}")
+        author.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        author.setStyleSheet(f"color: {DarkTheme.TEXT_SECONDARY};")
+        layout.addWidget(author)
 
-            <h3>Changelog</h3>
-            <p><b>v1.2.7</b></p>
-            <ul>
-                <li><b>Modular custom data calculator</b> &mdash; new
-                    Edit &rarr; Custom Calculator dialog lets you
-                    define ParaView-style expression rules that
-                    derive new variables from any reduced data.
-                    Template expansion: <code>Cp{i}</code> with range
-                    <code>auto:p{i}</code> or <code>1..32</code>
-                    generates Cp1..Cp32 from a single rule</li>
-                <li>Calculator UI:  category dropdown + variable
-                    dropdown + Insert button for one-click variable
-                    insertion; math function and operator buttons
-                    (sin/cos/sqrt/mean/std/clip/where/min/max/pi etc.
-                    + - * / ** ( ) , ); live preview with per-rule
-                    success/fail diagnostics; Browse All... dialog
-                    listing every variable with its sample mean</li>
-                <li>Geometric parameters in expressions: MAC, span,
-                    ref_area, MRC_x, MRC_y, MRC_z exposed as
-                    scalars from the case&apos;s assigned geometry</li>
-                <li>Custom variables flow through plots (with
-                    &plusmn;1&sigma; sigma shading), Data Table
-                    columns, MAT / HDF5 / Excel / CSV exports, and
-                    the Time History viewer</li>
-                <li>Variable name cleanup: one canonical name per
-                    concept (Q, P_static, Mach, U_inf, rho, &hellip;)
-                    plus a single physics alias (q_inf, p_inf).
-                    Dropped redundant case variants</li>
-                <li>Pdiff, Ptot, Temp reclassified from Balance
-                    Channels to Tunnel Conditions</li>
-                <li>Variable browser categorizes by Pressure Ports,
-                    Balance Channels, Tunnel Conditions, BRF Forces,
-                    WRF Forces, Coefficients, Geometry, Position /
-                    Time, Constants</li>
-                <li><b>MAT / HDF5 export restructured</b> by category:
-                    <code>case.Tunnel_Conditions.Q</code>,
-                    <code>case.BRF_Forces.Fx</code>,
-                    <code>case.Pressure_Ports.p0</code>,
-                    <code>case.Geometry.MAC</code>,
-                    <code>case.Raw.&lt;every raw DAQ channel&gt;</code>,
-                    <code>case.Custom.&lt;rules&gt;</code>,
-                    <code>case.Custom_std.&lt;rules&gt;</code>.
-                    Downstream MATLAB scripts referencing the old
-                    flat names will need to update field paths</li>
-                <li><b>Bug fix:</b> Cma vs Alpha now correctly
-                    updates when the user changes the MRC shift.
-                    Previously the Geometry dialog updated the
-                    model but didn&apos;t re-reduce affected cases,
-                    so CPitch (and therefore Cma) stayed stale</li>
-                <li><b>Bug fix:</b> reduce_single_point now
-                    populates ReducedDataPoint.air_on / air_off
-                    with the full raw DAQ dictionary.  Previously
-                    they were declared but never assigned, hiding
-                    pressure ports and other channels from the
-                    calculator and time history viewer</li>
-                <li>Tunnel Corrections dialog defaults to the SWT
-                    36" x 36" test section (area 1296 in&sup2;)</li>
-                <li>Custom Y dropdown stacked below Plot Type</li>
-                <li>Data Table tab: redundant per-format export
-                    buttons removed; use File &rarr; Export</li>
-                <li>Export dialog: data-to-include moved into a
-                    collapsible Advanced section; format order is
-                    Excel, MATLAB, HDF5, CSV, COE</li>
-                <li>COE filenames always include a lowercase beta
-                    tag (e.g. case_b0.COE, case_b10.COE) for
-                    self-describing multi-beta exports</li>
-            </ul>
-            <p><b>v1.2.6</b></p>
-            <ul>
-                <li>Stability derivative plots (Cma, CLa, Static Margin,
-                    CYb, Cnb, Clb) via central finite differences</li>
-                <li>Selectable blockage corrections (Pope-Harper for the
-                    Kirsten Wind Tunnel, generic Pope-Harper, Maskell,
-                    Glauert closed-section) accessible from
-                    Edit &rarr; Tunnel Corrections...</li>
-                <li>COE export (legacy Reduce2 format) with byte-uniform
-                    fixed-width decimal formatting; one .COE file per
-                    case per unique beta</li>
-                <li>Standalone <code>coe_postprocess.py</code> script
-                    that loads .COE files and produces the same plot
-                    suite as the legacy spreadsheet (Cma, Static
-                    Margin, beta-derivatives, blockage overlays) with
-                    no Excel / ActiveX / macro dependency</li>
-                <li>COE reader module (<code>utils/windtunnel/coe_reader.py</code>)
-                    for round-tripping reduced data through the legacy
-                    file format</li>
-            </ul>
-            <p><b>v1.2.5</b></p>
-            <ul>
-                <li>Auto-detect thermocouple calibration vintage per sample:
-                    new cal (0.1 V/&deg;C) vs old cal (0.1 V/&deg;F).
-                    Optional <code>temp_cal_mode</code> override on
-                    <code>calc_tunnel_conditions()</code> /
-                    <code>reduce_raw()</code> for forced behavior</li>
-                <li>New <code>raw</code> export group (MAT and HDF5):
-                    per-point mean of pdiff, ptot, ttot, alpha, beta, and
-                    BRF forces / moments (Fx, Fy, Fz, Mx, My, Mz) in the
-                    selected output units, plus a <code>units</code> label</li>
-                <li>User-friendly error dialogs replace silent failures:
-                    pre-flight checks before processing flag missing
-                    calibrations, missing data directories, no .tdms files,
-                    and invalid geometry with actionable messages</li>
-                <li>Calibration loading detects corrupt or wrong-format files
-                    with a dedicated &ldquo;Invalid Calibration File&rdquo; dialog</li>
-                <li>Export dialog blocks opening when no reduced cases exist
-                    and surfaces write failures as a critical dialog rather
-                    than a console traceback</li>
-                <li>Configuration save / load surfaces JSON parse errors and
-                    missing-file conditions as targeted dialogs</li>
-                <li>Worker reports &ldquo;Processing Failed&rdquo; if every
-                    configuration errors out, and notes partial-failure
-                    counts in the success status message</li>
-                <li>Cleaned up <code>requirements.txt</code>: dropped unused
-                    sympy, moved pyinstaller to <code>requirements-dev.txt</code>;
-                    added <code>INSTALL.md</code> with step-by-step setup</li>
-            </ul>
-            <p><b>v1.2.4</b></p>
-            <ul>
-                <li>Compressible isentropic tunnel conditions: dynamic pressure,
-                    Mach, density, and velocity now computed from isentropic
-                    pressure-ratio relations instead of incompressible Bernoulli</li>
-                <li>Static temperature derived from stagnation temperature using
-                    isentropic relation; density uses static P and static T</li>
-                <li>Sutherland's law for dynamic viscosity replaces fixed constant</li>
-                <li>New tunnel fields: P_static, T0, speed of sound available
-                    in time history viewer</li>
-                <li>Tare subtraction now removes only the DC mean of air-off,
-                    preserving time-varying dynamics of air-on signals</li>
-                <li>Moment balance support: balance config (Force/Moment)
-                    now persists correctly and propagates through data reduction</li>
-                <li>Calibration dialog pre-populates with current settings</li>
-                <li>Balance element labels adapt to config: N1/N2/Y1/Y2 (Force)
-                    or AftPitch/AftYaw/FwdPitch/FwdYaw (Moment)</li>
-                <li>LabVIEW interface: standalone <code>labview_balance_cal.py</code>
-                    for parsing .vol files and applying calibrations</li>
-                <li>Span included in all export formats (Excel, HDF5, MAT)</li>
-                <li>Help &rarr; Documentation menu opens README</li>
-            </ul>
-            <p><b>v1.2.3</b></p>
-            <ul>
-                <li>Multiple geometry definitions: define and manage named geometries
-                    (e.g. &ldquo;Full-Span&rdquo;, &ldquo;Half-Span&rdquo;) with
-                    independent MAC, span, area, MRC, and input units</li>
-                <li>Per-case geometry assignment: right-click a case &rarr;
-                    &ldquo;Assign Geometry&rdquo; to use a specific geometry definition,
-                    then auto-reprocesses with the new reference values</li>
-                <li>Reference span added: roll (C<sub>l</sub>) and yaw (C<sub>n</sub>)
-                    moment coefficients now use span (b) for normalization;
-                    pitching moment (C<sub>m</sub>) continues to use chord (MAC)</li>
-                <li>Output units moved to Edit &rarr; Output Units (independent
-                    of geometry definitions)</li>
-                <li>Geometry definitions and per-case assignments are saved/loaded
-                    in configuration files with backward compatibility</li>
-            </ul>
-            <p><b>v1.2.2</b></p>
-            <ul>
-                <li>Interactive save image dialog with live preview: customize
-                    legend labels, line widths, marker sizes/types, trace colors,
-                    axis labels, axis limits, export theme (White/Dark/Black/Transparent),
-                    font sizes, and resolution before saving</li>
-                <li>Save image settings are remembered between sessions</li>
-                <li>Standard deviation shading on plots (&plusmn;1&sigma; bands
-                    toggled via &ldquo;Show Std Dev&rdquo; checkbox)</li>
-                <li>Table columns now sort numerically (negative values sort correctly)</li>
-                <li>Consolidated export: single File &gt; Export dialog replaces
-                    individual CSV/Excel/HDF5/MAT buttons with extended data options
-                    for HDF5/MAT (raw data, reduced data, time-series, metadata)</li>
-            </ul>
-            <p><b>v1.2.0</b></p>
-            <ul>
-                <li>HDF5 and MAT exports now support optional unsteady (time-series)
-                    data via the &ldquo;Include Unsteady&rdquo; checkbox</li>
-                <li>HDF5 export restructured to per-case groups with
-                    <code>averaged/</code> and <code>unsteady/</code> sub-groups</li>
-                <li>Calibration and geometry metadata now included in all exports
-                    (Excel, HDF5, MAT)</li>
-                <li>Time history and FFT panels automatically overlay all visible
-                    cases with color-coded legends</li>
-            </ul>
-            <p><b>v1.1.0</b></p>
-            <ul>
-                <li>Added &ldquo;Plot vs &beta;&rdquo; toggle to plot coefficients
-                    with respect to sideslip angle (&beta;) on the x-axis</li>
-                <li>MAT export now saves each configuration as a named MATLAB
-                    struct with a <code>meta</code> sub-struct containing test
-                    summary information</li>
-                <li>Added Export to Excel in the File menu</li>
-                <li>Default calibration type changed to Cubic</li>
-            </ul>
-            <p><b>v1.0.0</b></p>
-            <ul>
-                <li>Initial release</li>
-                <li>TDMS data loading and multi-directory support</li>
-                <li>Balance and pressure calibration</li>
-                <li>BRF/WRF coordinate transforms and coefficient calculation</li>
-                <li>Interactive plotting with alpha/beta/Mach/Re filtering</li>
-                <li>Time history and FFT views</li>
-                <li>Export to CSV, Excel, HDF5, and MAT</li>
-                <li>Unit system support (IPS, FPS, MKS, CGS)</li>
-            </ul>
-
-            <h3>Credits</h3>
-            <p>Based on MATLAB wind tunnel data reduction routines.</p>
-            <p>Author: C. Fagley</p>
-
-            <h3>Libraries</h3>
-            <p>PyQt6 • NumPy • pyqtgraph • Matplotlib • pandas • nptdms</p>
-        </div>
-        """)
-        desc.setStyleSheet(f"""
-            QTextBrowser {{
-                background-color: {DarkTheme.BACKGROUND_LIGHT};
-                border: 1px solid {DarkTheme.BORDER};
-                border-radius: 4px;
-                padding: 8px;
-            }}
-        """)
-        layout.addWidget(desc)
+        # Compact version-history table
+        rows = "".join(
+            "<tr>"
+            f"<td style='padding:2px 10px 2px 0; white-space:nowrap;"
+            f" color:{DarkTheme.TEXT_PRIMARY};'><b>{ver}</b></td>"
+            f"<td style='padding:2px 10px 2px 0; white-space:nowrap;"
+            f" color:{DarkTheme.TEXT_SECONDARY};'>{date}</td>"
+            f"<td style='padding:2px 0; color:{DarkTheme.TEXT_PRIMARY};'>"
+            f"{note}</td>"
+            "</tr>"
+            for ver, date, note in VERSION_HISTORY
+        )
+        history = QTextBrowser()
+        history.setHtml(
+            "<div style=\"font-family:'Segoe UI'; font-size:9pt;\">"
+            "<table cellspacing='0' cellpadding='0'>" + rows +
+            "</table></div>"
+        )
+        history.setStyleSheet(
+            f"QTextBrowser {{"
+            f" background-color: {DarkTheme.BACKGROUND_LIGHT};"
+            f" border: 1px solid {DarkTheme.BORDER};"
+            f" border-radius: 4px; padding: 8px; }}"
+        )
+        layout.addWidget(history, stretch=1)
 
         # Close button
         btn_close = QPushButton("Close")

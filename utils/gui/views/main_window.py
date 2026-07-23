@@ -231,13 +231,17 @@ class MainWindow(QMainWindow):
         # Help menu
         help_menu = menubar.addMenu("&Help")
 
-        self.action_readme = QAction("&Documentation (README)", self)
+        self.action_documentation = QAction("&Documentation", self)
+        self.action_documentation.triggered.connect(self._open_documentation)
+        help_menu.addAction(self.action_documentation)
+
+        self.action_readme = QAction("Technical &Reference (README)", self)
         self.action_readme.triggered.connect(self._open_readme)
         help_menu.addAction(self.action_readme)
 
         help_menu.addSeparator()
 
-        self.action_about = QAction("&About", self)
+        self.action_about = QAction(f"&About {__app_name__}", self)
         self.action_about.triggered.connect(self._show_about)
         help_menu.addAction(self.action_about)
 
@@ -650,6 +654,16 @@ class MainWindow(QMainWindow):
                 self.set_status(
                     f"Added calibration '{cal_name}' "
                     f"({cal_type}, {balance_config})")
+
+    def _open_documentation(self):
+        """Open the HTML documentation in the default web browser."""
+        import webbrowser
+        docs_path = Path(__file__).resolve().parents[3] / "docs" / "index.html"
+        if not docs_path.exists():
+            QMessageBox.warning(self, "Not Found",
+                                f"Documentation not found at:\n{docs_path}")
+            return
+        webbrowser.open(docs_path.as_uri())
 
     def _open_readme(self):
         """Open the README.md file with the system default application."""
