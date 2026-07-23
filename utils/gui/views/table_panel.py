@@ -793,10 +793,17 @@ class TablePanel(QWidget):
             self._do_export(filepath, 'mat')
 
     def _sanitize_sheet_name(self, name: str) -> str:
-        """Sanitize a string for use as an Excel sheet name."""
-        name = name[:31]
+        """Sanitize a string for use as an Excel sheet name.
+
+        Excel sheet-name rules: max 31 chars; cannot contain
+        : \\ / ? * [ ]; cannot be blank; cannot start or end with an
+        apostrophe.  Returns '' when nothing valid remains so the
+        caller can substitute a generic 'Case_NNN' name.
+        """
         for ch in ['/', '\\', '[', ']', '*', '?', ':']:
             name = name.replace(ch, '_')
+        name = name.strip().strip("'").strip()
+        name = name[:31]
         return name
 
     def _build_case_header(self, case: TestCase) -> list:
@@ -908,13 +915,26 @@ class TablePanel(QWidget):
 
         return header
 
+    # MATLAB's namelengthmax is 63; struct field / variable names longer
+    # than this are rejected by MATLAB on load even though scipy will
+    # happily write them.
+    _MATLAB_NAME_MAX = 63
+
     def _sanitize_matlab_name(self, name: str) -> str:
-        """Sanitize a string for use as a MATLAB variable/field name."""
+        """Sanitize a string into a valid MATLAB variable/field name.
+
+        Guarantees the result is a legal MATLAB identifier: starts with
+        a letter, contains only [A-Za-z0-9_], is non-empty, and is no
+        longer than 63 characters (MATLAB's namelengthmax).  scipy will
+        write over-length or hyphenated names, but real MATLAB refuses
+        them on load, so we must enforce this here.
+        """
         import re
-        # Replace common symbols
+        # Replace common symbols with underscore / strip brackets
         name = name.replace(' ', '_').replace('[', '').replace(']', '')
         name = name.replace('/', '_').replace('(', '').replace(')', '')
         name = name.replace('^', '').replace('.', '_')
+        name = name.replace('-', '_')  # hyphens are illegal in identifiers
         # Remove any remaining non-alphanumeric/underscore chars
         name = re.sub(r'[^a-zA-Z0-9_]', '', name)
         # Ensure starts with a letter
@@ -923,6 +943,9 @@ class TablePanel(QWidget):
         # Ensure not empty
         if not name:
             name = 'unnamed'
+        # Enforce MATLAB's 63-character identifier limit
+        if len(name) > self._MATLAB_NAME_MAX:
+            name = name[:self._MATLAB_NAME_MAX]
         return name
 
     def _build_case_meta(self, case: TestCase) -> dict:
@@ -1510,19 +1533,27 @@ class TablePanel(QWidget):
 
                 col_headers = [col[1] for col in self._columns]
                 with pd.ExcelWriter(filepath, engine='openpyxl') as writer:
-                    used_names = {}
-                    for case in cases_to_export:
+                    used_names = set()
+                    n_cases = len(cases_to_export)
+                    key_width = max(2, len(str(n_cases)))
+                    for case_i, case in enumerate(cases_to_export, start=1):
                         rows = self._get_case_rows(case)
                         df = pd.DataFrame(rows, columns=col_headers)
-                        sheet_name = self._sanitize_sheet_name(case.name)
 
-                        # Deduplicate: append counter if name already used
-                        if sheet_name in used_names:
-                            used_names[sheet_name] += 1
-                            suffix = f"_{used_names[sheet_name]}"
-                            sheet_name = sheet_name[:31 - len(suffix)] + suffix
-                        else:
-                            used_names[sheet_name] = 0
+                        # Readable sheet name when possible, else a
+                        # generic Case_NN.  The full configuration name
+                        # always appears in cell A1 ("Case Name" header)
+                        # so nothing is lost regardless of the tab label.
+                        base = self._sanitize_sheet_name(case.name)
+                        if not base:
+                            base = f"Case_{case_i:0{key_width}d}"
+                        sheet_name = base
+                        dup = 1
+                        while sheet_name.lower() in used_names:
+                            suffix = f"_{dup}"
+                            sheet_name = base[:31 - len(suffix)] + suffix
+                            dup += 1
+                        used_names.add(sheet_name.lower())
 
                         # Write header summary then data below it
                         header_rows = self._build_case_header(case)
@@ -1557,9 +1588,20 @@ class TablePanel(QWidget):
 
                 col_headers = [col[1] for col in self._columns]
                 mat_dict = {}
-                used_names = {}
 
-                for case in cases_to_export:
+                # Top-level variable names use a generic, always-valid
+                # convention (case_001, case_002, ...) so long or
+                # hyphenated configuration names never break MATLAB's
+                # 63-char identifier limit.  The real configuration name
+                # is preserved inside each struct (.name) and in a
+                # top-level 'case_index' manifest, so no data is lost.
+                n_cases = len(cases_to_export)
+                key_width = max(3, len(str(n_cases)))
+                idx_keys = []
+                idx_names = []
+                idx_runs = []
+
+                for case_i, case in enumerate(cases_to_export, start=1):
                     # Categorized struct: case.Tunnel_Conditions.Q,
                     # case.BRF_Forces.Fx, case.Pressure_Ports.p0, etc.,
                     # plus case.Raw.<every raw channel>.
@@ -1567,6 +1609,14 @@ class TablePanel(QWidget):
 
                     # Metadata sub-struct (calibration, geometry, etc.)
                     case_struct['meta'] = self._build_case_meta(case)
+
+                    # Name pointer fields so the generic key can be
+                    # mapped back to the real configuration name.
+                    case_key = f"case_{case_i:0{key_width}d}"
+                    case_struct['name'] = str(case.name)
+                    case_struct['key'] = case_key
+                    case_struct['run_number'] = np.float64(
+                        case.run_number if case.run_number else 0)
 
                     # Custom calculator outputs: per-point mean + std
                     custom_means = getattr(case, 'custom_vars', None) or {}
@@ -1613,19 +1663,22 @@ class TablePanel(QWidget):
                             if unsteady:
                                 case_struct['unsteady'] = unsteady
 
-                    # Sanitize case name for MATLAB variable
-                    safe_name = self._sanitize_matlab_name(case.name)
+                    mat_dict[case_key] = case_struct
+                    idx_keys.append(case_key)
+                    idx_names.append(str(case.name))
+                    idx_runs.append(
+                        float(case.run_number) if case.run_number else 0.0)
 
-                    # Handle duplicate names
-                    if safe_name in used_names:
-                        used_names[safe_name] += 1
-                        safe_name = f"{safe_name}_{used_names[safe_name]}"
-                    else:
-                        used_names[safe_name] = 0
+                # Top-level manifest mapping generic keys -> real names.
+                # In MATLAB:  case_index.names{2} gives case_002's name.
+                mat_dict['case_index'] = {
+                    'keys': np.array(idx_keys, dtype=object),
+                    'names': np.array(idx_names, dtype=object),
+                    'run_numbers': np.array(idx_runs, dtype=float),
+                    'count': np.float64(n_cases),
+                }
 
-                    mat_dict[safe_name] = case_struct
-
-                scipy.io.savemat(filepath, mat_dict)
+                scipy.io.savemat(filepath, mat_dict, long_field_names=False)
 
             elif format == 'csv':
                 # CSV - collect from the table widget
