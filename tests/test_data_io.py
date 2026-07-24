@@ -32,12 +32,16 @@ from utils.windtunnel.data_io import (  # noqa: E402
     RawData,
     read_hdf5_file, read_mat_file, read_run_file,
     classify_files_by_condition, extract_mach_from_filename,
+    extract_speed_from_filename, extract_sort_key_from_filename,
+    speed_condition_key, copy_balance_markers,
     BALANCE_GROUP_INTERNAL, BALANCE_GROUP_EXTERNAL,
 )
 from utils.windtunnel.transforms import (  # noqa: E402
     calc_brf_forces, is_external_balance_data, wrf_from_resolved_loads,
 )
-from utils.windtunnel.reduction import reduce_single_point  # noqa: E402
+from utils.windtunnel.reduction import (  # noqa: E402
+    reduce_single_point, reduce_steady_state, to_dataframe,
+)
 from utils.windtunnel.transforms import Geometry  # noqa: E402
 
 
@@ -102,6 +106,27 @@ def write_external_h5(path, alpha=2.0, root_markers=True,
             ate_dev = meta.create_group('devices/ate')
             ate_dev.attrs['span_config'] = 'full'
             ate_dev.attrs['balance_type'] = 'external'
+    return path
+
+
+def write_speed_h5(path, alpha=0.0, speed_value=30.0, speed_unit='hz',
+                   mach=0.0, setpoints=(0.0, 10.0, 20.0, 30.0)):
+    """
+    Non-Mach velocity-sweep file: ATE loads + speed root attrs matching
+    the freestream CONTRACT (speed_unit/speed_value/mach/speed_setpoints).
+    """
+    with h5py.File(path, 'w') as h5:
+        ate = h5.create_group(BALANCE_GROUP_EXTERNAL)
+        for i, name in enumerate(EXTERNAL_CHANNELS):
+            _write_channel(ate, name, _channel_wave(i), DT_FAST)
+        _write_common(h5, alpha)
+        h5.attrs['run_number'] = 7
+        h5.attrs['balance_group'] = BALANCE_GROUP_EXTERNAL
+        h5.attrs['balance_type'] = 'external'
+        h5.attrs['speed_unit'] = speed_unit
+        h5.attrs['speed_value'] = speed_value
+        h5.attrs['mach'] = mach
+        h5.attrs['speed_setpoints'] = np.array(setpoints, dtype=float)
     return path
 
 
@@ -362,6 +387,193 @@ class TestExternalBalanceGuard:
 
 
 # ---------------------------------------------------------------------------
+# Speed / velocity sweep dimension (Hz/ftps/mps/RPM/mach)
+# ---------------------------------------------------------------------------
+
+class TestExtractSpeedFromFilename:
+
+    def test_hz_token(self):
+        v, u = extract_speed_from_filename(
+            'run_0001_alpha_0.0_beta_0.0_Hz_30.0.h5')
+        assert v == pytest.approx(30.0)
+        assert u == 'hz'
+
+    def test_ftps_token(self):
+        v, u = extract_speed_from_filename(
+            'run_0002_alpha_2.0_beta_0.0_ftps_50.0.h5')
+        assert v == pytest.approx(50.0)
+        assert u == 'ft/s'
+
+    def test_mps_and_rpm_tokens(self):
+        v, u = extract_speed_from_filename('run_alpha_0.0_beta_0.0_mps_25.0.h5')
+        assert (v, u) == (pytest.approx(25.0), 'm/s')
+        v, u = extract_speed_from_filename('run_alpha_0.0_beta_0.0_RPM_1200.h5')
+        assert (v, u) == (pytest.approx(1200.0), 'rpm')
+
+    def test_legacy_mach_token(self):
+        v, u = extract_speed_from_filename(
+            'run_0004_alpha_2.0_beta_0.0_mach_0.30.h5')
+        assert v == pytest.approx(0.30)
+        assert u == 'mach'
+
+    def test_no_token(self):
+        assert extract_speed_from_filename('AirOn_F16_Alpha_2.0.tdms') == (
+            None, None)
+
+
+class TestSpeedOnRawData:
+
+    def test_hz_file_exposes_speed(self, tmp_path):
+        path = write_speed_h5(
+            tmp_path / 'run_0007_alpha_0.0_beta_0.0_Hz_30.0.h5',
+            speed_value=30.0, speed_unit='hz')
+        raw, _ = read_hdf5_file(str(path))
+
+        assert raw.properties['speed_value'] == pytest.approx(30.0)
+        assert raw.properties['speed_unit'] == 'hz'
+        assert 'Speed' in raw.data
+        np.testing.assert_allclose(raw.data['Speed'],
+                                   np.full(N_FAST, 30.0))
+
+    def test_root_attr_wins_over_filename(self, tmp_path):
+        # Root attr says 20 Hz even though filename token says 30
+        path = write_speed_h5(
+            tmp_path / 'run_alpha_0.0_beta_0.0_Hz_30.0.h5',
+            speed_value=20.0, speed_unit='hz')
+        raw, _ = read_hdf5_file(str(path))
+        assert raw.properties['speed_value'] == pytest.approx(20.0)
+
+    def test_legacy_mach_file_speed_unit_mach(self, tmp_path):
+        path = write_external_h5(
+            tmp_path / 'run_0004_alpha_2.0_beta_0.0_mach_0.30.h5')
+        raw, _ = read_hdf5_file(str(path))
+        assert raw.properties['speed_unit'] == 'mach'
+        assert raw.properties['speed_value'] == pytest.approx(0.30)
+        assert 'Speed' in raw.data
+
+    def test_legacy_internal_file_degrades(self, tmp_path):
+        # No speed/mach token in name, no speed attrs, no mach attr:
+        # speed simply not exposed (graceful degrade).
+        path = write_legacy_h5(tmp_path / 'legacy.h5')
+        raw, _ = read_hdf5_file(str(path))
+        assert 'speed_value' not in raw.properties
+        assert 'Speed' not in raw.data
+
+
+class TestSpeedClassification:
+
+    def test_hz_sweep_distinct_conditions(self):
+        files = [
+            'run_0001_alpha_0.0_beta_0.0_Hz_0.0.h5',
+            'run_0002_alpha_0.0_beta_0.0_Hz_10.0.h5',
+            'run_0003_alpha_0.0_beta_0.0_Hz_20.0.h5',
+            'run_0004_alpha_0.0_beta_0.0_Hz_30.0.h5',
+        ]
+        classified = classify_files_by_condition(files)
+
+        # Speed 0 -> air off; nonzero speeds -> air on
+        assert classified['AirOff'] == [files[0]]
+        assert classified['AirOn'] == files[1:]
+
+        # NOT collapsed: each nonzero speed is its own condition key
+        speed_keys = [k for k in classified
+                      if k not in ('AirOn', 'AirOff')]
+        assert len(speed_keys) == 3
+        assert classified[speed_condition_key(30.0, 'hz')] == [files[3]]
+        assert classified[speed_condition_key(10.0, 'hz')] == [files[1]]
+
+    def test_legacy_mach_classification_unchanged(self):
+        files = [
+            'run_0001_alpha_2.0_beta_0.0_mach_0.00.h5',
+            'run_0002_alpha_2.0_beta_0.0_mach_0.30.h5',
+            'run_0003_alpha_4.0_beta_0.0_mach_0.30.h5',
+        ]
+        classified = classify_files_by_condition(files)
+        assert classified['AirOff'] == [files[0]]
+        assert classified['AirOn'] == files[1:]
+
+
+class TestSpeedOrdering:
+
+    def test_sort_key_alpha_beta_speed(self):
+        assert extract_sort_key_from_filename(
+            'run_alpha_2.0_beta_1.0_Hz_30.0.h5') == (
+            pytest.approx(2.0), pytest.approx(1.0), pytest.approx(30.0))
+
+    def test_directory_orders_alpha_then_beta_then_speed(self):
+        files = [
+            'run_a_alpha_2.0_beta_0.0_Hz_30.0.h5',
+            'run_b_alpha_0.0_beta_0.0_Hz_30.0.h5',
+            'run_c_alpha_0.0_beta_0.0_Hz_10.0.h5',
+            'run_d_alpha_0.0_beta_5.0_Hz_10.0.h5',
+        ]
+        ordered = sorted(files, key=extract_sort_key_from_filename)
+        assert ordered == [
+            'run_c_alpha_0.0_beta_0.0_Hz_10.0.h5',   # a0 b0 s10
+            'run_b_alpha_0.0_beta_0.0_Hz_30.0.h5',   # a0 b0 s30
+            'run_d_alpha_0.0_beta_5.0_Hz_10.0.h5',   # a0 b5 s10
+            'run_a_alpha_2.0_beta_0.0_Hz_30.0.h5',   # a2 b0 s30
+        ]
+
+
+def _external_raw_dict_speed(value, unit='hz', setpoints=None, n=N_FAST):
+    raw = _external_raw_dict(n)
+    raw['Speed'] = np.full(n, value)
+    raw['speed_value'] = value
+    raw['speed_unit'] = unit
+    if setpoints is not None:
+        raw['speed_setpoints'] = np.array(setpoints, dtype=float)
+    # Tunnel channels so SWT conditions can be computed
+    raw['Pdiff'] = np.full(n, 0.5)
+    raw['Ptot'] = np.full(n, 2.0)
+    raw['Temp'] = np.full(n, 2.0)
+    return raw
+
+
+class TestSpeedReductionMetadata:
+
+    def _reduce_sweep(self, speeds, setpoints=None):
+        pressure_cal = {'P220': SimpleNamespace(slope=1.0),
+                        'P690': SimpleNamespace(slope=7.0)}
+        reduced = []
+        for s in speeds:
+            raw = _external_raw_dict_speed(s, setpoints=setpoints)
+            rd = reduce_single_point(
+                raw, raw, cal=None, geo=Geometry(C=2.0, S=10.0),
+                pressure_cal=pressure_cal, facility='SWT')
+            reduced.append(rd)
+        return reduced
+
+    def test_reduced_point_carries_speed(self):
+        reduced = self._reduce_sweep([30.0])
+        assert reduced[0].speed_value == pytest.approx(30.0)
+        assert reduced[0].speed_unit == 'hz'
+
+    def test_steady_state_lists_multiple_speeds(self):
+        # Velocity sweep at fixed alpha/beta -> speed is the axis
+        reduced = self._reduce_sweep([30.0, 10.0, 20.0])
+        ss = reduce_steady_state(reduced)
+
+        # Metadata surfaces the distinct swept speeds
+        np.testing.assert_allclose(ss.speed_setpoints, [10.0, 20.0, 30.0])
+        assert ss.speed_unit == 'hz'
+        # Points are organized in ascending speed order
+        np.testing.assert_allclose(np.ravel(ss.speeds), [10.0, 20.0, 30.0])
+        # Speed column surfaces into the exported dataframe
+        df = to_dataframe(ss)
+        assert 'Speed' in df.columns
+
+    def test_run_level_setpoints_win(self):
+        # Only two air-on points reduced, but the run-level setpoints
+        # record all four speeds swept (incl. the air-off 0).
+        reduced = self._reduce_sweep(
+            [10.0, 20.0], setpoints=[0.0, 10.0, 20.0, 30.0])
+        ss = reduce_steady_state(reduced)
+        np.testing.assert_allclose(ss.speed_setpoints,
+                                   [0.0, 10.0, 20.0, 30.0])
+
+
+# ---------------------------------------------------------------------------
 # Package smoke test
 # ---------------------------------------------------------------------------
 
@@ -371,5 +583,7 @@ def test_package_imports():
     assert callable(wt.read_run_file)
     assert callable(wt.is_external_balance_data)
     assert callable(wt.wrf_from_resolved_loads)
+    assert callable(wt.extract_speed_from_filename)
+    assert callable(wt.extract_sort_key_from_filename)
     assert isinstance(RawData().balance_type, str)
     assert RawData().balance_type == 'internal'

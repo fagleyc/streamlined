@@ -18,7 +18,8 @@ from .calibration import (
 from .data_io import (
     read_tdms_file, read_run_file, find_data_files,
     classify_files_by_condition, copy_balance_markers,
-    extract_alpha_beta_from_filename, export_to_csv
+    extract_alpha_beta_from_filename, extract_sort_key_from_filename,
+    export_to_csv
 )
 from .transforms import Geometry, is_external_balance_data
 from .reduction import (
@@ -410,11 +411,12 @@ class DAQ:
         files = find_data_files(directory, pattern)
         classified = classify_files_by_condition(files)
 
-        # Sort files by alpha/beta
+        # Organize files alpha -> beta -> speed (speed is a first-class
+        # sweep dimension alongside alpha/beta)
         air_on_sorted = sorted(classified['AirOn'],
-                               key=lambda f: extract_alpha_beta_from_filename(str(f)))
+                               key=lambda f: extract_sort_key_from_filename(str(f)))
         air_off_sorted = sorted(classified['AirOff'],
-                                key=lambda f: extract_alpha_beta_from_filename(str(f)))
+                                key=lambda f: extract_sort_key_from_filename(str(f)))
 
         # Pair air-on with air-off files
         for i, on_file in enumerate(air_on_sorted):

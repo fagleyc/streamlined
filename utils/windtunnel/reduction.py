@@ -29,6 +29,15 @@ class ReducedDataPoint:
     """Reduced data for a single test point."""
     alpha: np.ndarray = field(default_factory=lambda: np.array([]))
     beta: np.ndarray = field(default_factory=lambda: np.array([]))
+    # Tunnel speed setting — a first-class sweep dimension alongside
+    # alpha/beta. ``speed`` is the per-sample channel; ``speed_value`` /
+    # ``speed_unit`` the scalar setting (e.g. 30.0 / 'hz'); and
+    # ``speed_setpoints`` the run-level list of swept speeds (present
+    # when the run was a multi-velocity sweep).
+    speed: np.ndarray = field(default_factory=lambda: np.array([]))
+    speed_value: Optional[float] = None
+    speed_unit: Optional[str] = None
+    speed_setpoints: Optional[Any] = None
     time: np.ndarray = field(default_factory=lambda: np.array([]))
     air_on: Dict[str, Any] = field(default_factory=dict)
     air_off: Dict[str, Any] = field(default_factory=dict)
@@ -47,6 +56,11 @@ class SteadyStateData:
     """Steady-state (averaged) aerodynamic data."""
     alphas: np.ndarray = field(default_factory=lambda: np.array([]))
     betas: np.ndarray = field(default_factory=lambda: np.array([]))
+    # Tunnel speed setting per point (organization axis after alpha/beta)
+    speeds: np.ndarray = field(default_factory=lambda: np.array([]))
+    # Distinct speeds swept (surfaces a multi-velocity sweep) + its unit
+    speed_setpoints: np.ndarray = field(default_factory=lambda: np.array([]))
+    speed_unit: Optional[str] = None
     Cl: np.ndarray = field(default_factory=lambda: np.array([]))
     Cd: np.ndarray = field(default_factory=lambda: np.array([]))
     Cs: np.ndarray = field(default_factory=lambda: np.array([]))
@@ -116,6 +130,19 @@ def reduce_single_point(raw_on: Dict[str, np.ndarray],
     result.alpha = raw_on.get('Alpha', np.array([0.0]))
     result.beta = raw_on.get('Beta', np.array([0.0]))
     result.time = raw_on.get('Time', np.array([0.0]))
+
+    # Speed setting from AirON (first-class sweep dimension). The Speed
+    # channel and speed_value/speed_unit markers ride in via
+    # copy_balance_markers; fall back to the channel mean when only the
+    # per-sample Speed channel is present.
+    result.speed = raw_on.get('Speed', np.array([]))
+    speed_value = raw_on.get('speed_value')
+    if speed_value is None and len(result.speed) > 0:
+        speed_value = float(np.mean(result.speed))
+    result.speed_value = (float(speed_value)
+                          if speed_value is not None else None)
+    result.speed_unit = raw_on.get('speed_unit')
+    result.speed_setpoints = raw_on.get('speed_setpoints')
 
     # Get position data from AirOFF (may differ from AirON if using a single tare)
     alpha_off = raw_off.get('Alpha', np.array([0.0]))
@@ -263,6 +290,12 @@ def reduce_steady_state(reduced_data: List[ReducedDataPoint]) -> SteadyStateData
     # Extract mean values for each point
     alphas = np.array([np.mean(rd.alpha) for rd in reduced_data])
     betas = np.array([np.mean(rd.beta) for rd in reduced_data])
+    # Speed setting per point (first-class axis after alpha/beta). Points
+    # with no speed marker are NaN here but sort as 0.0.
+    speeds = np.array([
+        rd.speed_value if getattr(rd, 'speed_value', None) is not None
+        else np.nan
+        for rd in reduced_data])
 
     Cl = np.array([np.mean(rd.coeffs.Cl) for rd in reduced_data])
     Cd = np.array([np.mean(rd.coeffs.Cd) for rd in reduced_data])
@@ -282,10 +315,12 @@ def reduce_steady_state(reduced_data: List[ReducedDataPoint]) -> SteadyStateData
     # Round alpha and beta for sorting
     alpha_int = np.round(alphas * 2) / 2
     beta_int = np.round(betas * 2) / 2
+    # NaN speeds (points with no marker) collapse to 0.0 for ordering
+    speed_sort = np.where(np.isnan(speeds), 0.0, speeds)
 
-    # Sort by alpha then beta
-    ab = np.column_stack([alpha_int, beta_int])
-    sort_idx = np.lexsort((ab[:, 1], ab[:, 0]))
+    # Sort by alpha, then beta, then speed (speed is a first-class
+    # sweep dimension organized after alpha/beta)
+    sort_idx = np.lexsort((speed_sort, beta_int, alpha_int))
 
     # Get unique combinations
     n_alpha = len(np.unique(alpha_int))
@@ -295,10 +330,30 @@ def reduce_steady_state(reduced_data: List[ReducedDataPoint]) -> SteadyStateData
     ss = SteadyStateData()
     ss.indices = sort_idx
 
+    # Surface the swept speeds into the summary metadata: the run-level
+    # speed_setpoints (authoritative "it swept N velocities") wins,
+    # otherwise the distinct observed speeds are used.
+    setpoints = None
+    for rd in reduced_data:
+        sp = getattr(rd, 'speed_setpoints', None)
+        if sp is not None:
+            setpoints = np.asarray(sp, dtype=float).ravel()
+            break
+    if setpoints is None:
+        finite = speeds[~np.isnan(speeds)]
+        setpoints = (np.unique(np.round(finite, 3)) if finite.size
+                     else np.array([]))
+    ss.speed_setpoints = setpoints
+    for rd in reduced_data:
+        if getattr(rd, 'speed_unit', None):
+            ss.speed_unit = rd.speed_unit
+            break
+
     # Reshape if we have a grid structure
     if n_alpha * n_beta == n_points:
         ss.alphas = alphas[sort_idx].reshape(n_alpha, n_beta)
         ss.betas = betas[sort_idx].reshape(n_alpha, n_beta)
+        ss.speeds = speeds[sort_idx].reshape(n_alpha, n_beta)
         ss.Cl = Cl[sort_idx].reshape(n_alpha, n_beta)
         ss.Cd = Cd[sort_idx].reshape(n_alpha, n_beta)
         ss.Cs = Cs[sort_idx].reshape(n_alpha, n_beta)
@@ -315,6 +370,7 @@ def reduce_steady_state(reduced_data: List[ReducedDataPoint]) -> SteadyStateData
         # Just return sorted arrays
         ss.alphas = alphas[sort_idx]
         ss.betas = betas[sort_idx]
+        ss.speeds = speeds[sort_idx]
         ss.Cl = Cl[sort_idx]
         ss.Cd = Cd[sort_idx]
         ss.Cs = Cs[sort_idx]
@@ -372,6 +428,10 @@ def to_dataframe(ss: SteadyStateData) -> 'pd.DataFrame':
         'CPitch': ss.CPitch.flatten(),
         'CYaw': ss.CYaw.flatten(),
     }
+
+    # Speed setting column (first-class sweep dimension) when present
+    if ss.speeds is not None and np.size(ss.speeds) == np.size(ss.alphas):
+        data['Speed'] = ss.speeds.flatten()
 
     for key, value in ss.pressure_coeffs.items():
         data[key] = value.flatten()

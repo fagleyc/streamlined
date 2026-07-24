@@ -40,7 +40,9 @@ from .calibration import (
 from .data_io import (
     read_tdms_file, read_hdf5_file, read_mat_file, read_run_file,
     find_data_files, export_to_csv, export_to_excel,
-    classify_files_by_condition, copy_balance_markers
+    classify_files_by_condition, copy_balance_markers,
+    extract_speed_from_filename, extract_sort_key_from_filename,
+    speed_condition_key
 )
 from .reduction import (
     reduce_raw, reduce_steady_state, to_dataframe,
@@ -107,6 +109,9 @@ __all__ = [
     'export_to_excel',
     'classify_files_by_condition',
     'copy_balance_markers',
+    'extract_speed_from_filename',
+    'extract_sort_key_from_filename',
+    'speed_condition_key',
 
     # Reduction
     'reduce_raw',

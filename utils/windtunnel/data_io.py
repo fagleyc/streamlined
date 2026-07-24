@@ -228,6 +228,106 @@ def _ensure_alpha_beta(raw: RawData, properties: Dict[str, Any],
             raw.data['Beta'] = np.full(n_samples, beta)
 
 
+# Filename speed-token unit tags -> canonical speed_unit strings.
+# The token sits in the slot AFTER alpha/beta (replacing the legacy mach
+# token for non-Mach sweeps): run_0001_alpha_0.0_beta_0.0_Hz_30.0.h5.
+# Ordered so the more specific tags are tried before the shorter ones.
+_SPEED_UNIT_TAGS = (
+    ('ftps', 'ft/s'),
+    ('mps', 'm/s'),
+    ('rpm', 'rpm'),
+    ('hz', 'hz'),
+    ('mach', 'mach'),
+)
+
+
+def extract_speed_from_filename(filepath: str) -> Tuple[Optional[float],
+                                                        Optional[str]]:
+    """
+    Extract the tunnel speed setting from a filename speed token.
+
+    Mirrors :func:`extract_alpha_beta_from_filename` /
+    :func:`extract_mach_from_filename`, parsing any of the
+    ``{Hz|ftps|mps|RPM|mach}_<value>`` tokens that Freestream writes in
+    the slot after alpha/beta. Non-Mach velocity sweeps use the Hz / ftps
+    / mps / RPM tags; Mach sweeps keep the legacy ``mach`` token.
+
+    Parameters
+    ----------
+    filepath : str
+        File path to parse
+
+    Returns
+    -------
+    tuple
+        ``(value, unit)`` where ``unit`` is one of
+        ``'hz'``/``'ft/s'``/``'m/s'``/``'rpm'``/``'mach'``, or
+        ``(None, None)`` when no speed token is present.
+    """
+    import re
+
+    filename = Path(filepath).stem
+    for tag, unit in _SPEED_UNIT_TAGS:
+        match = re.search(rf'{tag}[_\s]*(-?\d+\.?\d*)', filename,
+                          re.IGNORECASE)
+        if match:
+            return float(match.group(1)), unit
+    return None, None
+
+
+def _ensure_speed(raw: 'RawData', properties: Dict[str, Any],
+                  filepath: str) -> None:
+    """
+    Ensure the tunnel speed setting is exposed on ``raw`` like Alpha/Beta.
+
+    The speed is a first-class sweep dimension: this fills
+    ``raw.properties['speed_value']`` / ``['speed_unit']`` and adds a
+    ``Speed`` channel (np.full to the sample count) to ``raw.data``.
+
+    Resolution order (root-attr wins, filename is the fallback):
+
+    1. ``speed_value`` / ``speed_unit`` already on ``raw.properties``
+       (copied from the file's root attrs by the readers).
+    2. The filename ``{Hz|ftps|mps|RPM|mach}_<value>`` token.
+    3. Legacy Mach-only files: the canonical ``mach`` (from properties or
+       the filename) -> ``speed_unit='mach'``, ``speed_value=<mach>``.
+
+    Degrades gracefully (no Speed channel, no markers) when none of these
+    yield a value, so callers such as read_tdms_file stay unaffected.
+    """
+    n_samples = len(raw.time) if len(raw.time) > 0 else 1
+
+    value = raw.properties.get('speed_value')
+    unit = raw.properties.get('speed_unit')
+    if value is not None and unit is not None:
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            value = None
+        unit = str(unit).strip().lower()
+    else:
+        value, unit = extract_speed_from_filename(filepath)
+
+    # Legacy Mach-only fallback: canonical mach becomes the speed setting.
+    if value is None or unit is None:
+        mach = raw.properties.get('mach', properties.get('mach'))
+        if mach is None:
+            mach = extract_mach_from_filename(filepath)
+        if mach is not None:
+            try:
+                value, unit = float(mach), 'mach'
+            except (TypeError, ValueError):
+                value, unit = None, None
+
+    if value is None or unit is None:
+        return
+
+    raw.properties['speed_value'] = value
+    raw.properties['speed_unit'] = unit
+    if 'Speed' not in raw.data:
+        raw.data['Speed'] = np.full(n_samples, value)
+
+
 def read_tdms_file(filepath: str) -> Tuple[RawData, Dict[str, Any]]:
     """
     Read a TDMS file and return data resampled to a common time base.
@@ -499,6 +599,8 @@ def read_hdf5_file(filepath: str) -> Tuple[RawData, Dict[str, Any]]:
 
         # Alpha/Beta might be channels, properties or filename-encoded
         _ensure_alpha_beta(raw, properties, str(filepath))
+        # Speed (Hz/ftps/mps/RPM/mach) is a first-class sweep dimension
+        _ensure_speed(raw, properties, str(filepath))
 
     return raw, properties
 
@@ -682,6 +784,8 @@ def read_mat_file(filepath: str) -> Tuple[RawData, Dict[str, Any]]:
 
     # Alpha/Beta might be channels, properties or filename-encoded
     _ensure_alpha_beta(raw, properties, str(filepath))
+    # Speed (Hz/ftps/mps/RPM/mach) is a first-class sweep dimension
+    _ensure_speed(raw, properties, str(filepath))
 
     return raw, properties
 
@@ -693,12 +797,15 @@ def copy_balance_markers(raw: RawData,
     into a flat channel dict.
 
     The reduction chain receives plain channel dicts, so the markers
-    ride along as (string-valued) dict entries: ``balance_type`` drives
-    :func:`~.transforms.is_external_balance_data` and ``load_units``
-    drives the SI -> lb/in-lb conversion in
-    :func:`~.external_balance.external_loads_to_ips`.
+    ride along as dict entries: ``balance_type`` drives
+    :func:`~.transforms.is_external_balance_data`, ``load_units`` drives
+    the SI -> lb/in-lb conversion in
+    :func:`~.external_balance.external_loads_to_ips`, and the speed
+    markers (``speed_value`` / ``speed_unit`` / ``speed_setpoints``)
+    carry the tunnel-speed sweep dimension through to the reducers.
     """
-    for key in ('balance_type', 'load_units'):
+    for key in ('balance_type', 'load_units',
+                'speed_value', 'speed_unit', 'speed_setpoints'):
         if key in raw.properties:
             channel_dict[key] = raw.properties[key]
     return channel_dict
@@ -820,15 +927,38 @@ def find_data_files(directory: str, pattern: str = '*.tdms',
     return sorted(files, key=lambda x: x.stat().st_mtime)
 
 
+def speed_condition_key(value: float, unit: Optional[str]) -> str:
+    """
+    Build the per-condition dict key for a (value, unit) speed setting.
+
+    Air-off (speed 0 / mach 0) collapses to ``'AirOff'``; each distinct
+    nonzero speed becomes its own condition key, e.g. ``'Hz_30.0'`` or
+    ``'mach_0.3'``, so a velocity sweep classifies into its distinct
+    speeds instead of collapsing to a single condition.
+    """
+    if value is None or abs(value) < 1e-6:
+        return 'AirOff'
+    tag = (unit or 'speed').replace('/', '').replace(' ', '')
+    return f'{tag}_{value:g}'
+
+
 def classify_files_by_condition(files: list) -> Dict[str, list]:
     """
-    Classify data files by test condition (AirOn/AirOff).
+    Classify data files by test condition, keyed by the speed dimension.
 
     Legacy TDMS runs carry an explicit ``AirOn``/``AirOff`` substring in
     the filename and are classified by that (unchanged). Newer Freestream
-    runs drop that token and instead encode the condition in the Mach
-    value: a ``mach_0``/``mach_0.00`` point is a tare/air-off point, any
-    positive Mach is air-on. Files with neither cue are left unclassified.
+    runs drop that token and instead encode the condition in the speed
+    setting: the filename ``{Hz|ftps|mps|RPM|mach}_<value>`` token (or the
+    legacy ``mach`` token). A zero speed (``Hz_0.0`` / ``mach_0.00``) is a
+    tare/air-off point; any nonzero speed is air-on.
+
+    The returned dict always carries the ``'AirOn'`` / ``'AirOff'`` keys
+    (``'AirOn'`` collects every nonzero-speed file). In addition, each
+    distinct nonzero speed gets its own condition key (e.g. ``'Hz_30.0'``)
+    listing just that speed's files, so a velocity sweep surfaces as its
+    distinct speeds rather than a single collapsed condition. Files with
+    no cue at all are left unclassified.
 
     Parameters
     ----------
@@ -838,26 +968,55 @@ def classify_files_by_condition(files: list) -> Dict[str, list]:
     Returns
     -------
     dict
-        Dictionary with 'AirOn' and 'AirOff' keys
+        Dictionary with 'AirOn' / 'AirOff' keys plus one key per distinct
+        nonzero speed condition.
     """
-    classified = {'AirOn': [], 'AirOff': []}
+    classified: Dict[str, list] = {'AirOn': [], 'AirOff': []}
 
     for f in files:
         fname = str(f).lower()
         if 'airoff' in fname:                       # legacy token wins first
             classified['AirOff'].append(f)
-        elif 'airon' in fname:
+            continue
+        if 'airon' in fname:
             classified['AirOn'].append(f)
-        else:
+            continue
+
+        value, unit = extract_speed_from_filename(str(f))
+        if value is None:                           # fall back to bare mach
             mach = extract_mach_from_filename(str(f))
             if mach is not None:
-                if abs(mach) < 1e-6:                 # mach_0.00 -> air off/tare
-                    classified['AirOff'].append(f)
-                else:
-                    classified['AirOn'].append(f)
-            # else: neither cue present -> leave unclassified
+                value, unit = mach, 'mach'
+        if value is None:
+            continue                                # neither cue -> skip
+
+        if abs(value) < 1e-6:                       # speed 0 -> air off/tare
+            classified['AirOff'].append(f)
+        else:
+            classified['AirOn'].append(f)
+            # A distinct nonzero speed is its own condition
+            classified.setdefault(speed_condition_key(value, unit),
+                                  []).append(f)
 
     return classified
+
+
+def extract_sort_key_from_filename(filepath: str) -> Tuple[float, float,
+                                                           float]:
+    """
+    Organization/sort key for a run file: ``(alpha, beta, speed_value)``.
+
+    Speed is a first-class sweep dimension alongside alpha and beta, so a
+    directory of runs organizes alpha -> beta -> speed. The speed value
+    comes from the ``{Hz|ftps|mps|RPM|mach}_<value>`` token, falling back
+    to the legacy bare ``mach`` token, then 0.0 when neither is present.
+    """
+    alpha, beta = extract_alpha_beta_from_filename(filepath)
+    value, _ = extract_speed_from_filename(filepath)
+    if value is None:
+        mach = extract_mach_from_filename(filepath)
+        value = mach if mach is not None else 0.0
+    return (alpha, beta, value)
 
 
 def extract_mach_from_filename(filepath: str) -> Optional[float]:
