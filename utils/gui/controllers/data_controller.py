@@ -306,7 +306,11 @@ class ProcessingWorker(QRunnable):
         n_alpha = len(alphas)
         n_beta = len(betas)
 
-        if BACKEND_AVAILABLE and self.balance_cal:
+        # Backend reduction runs whenever it's importable: the balance
+        # calibration can come from an explicitly loaded .vol OR from the
+        # matrix freestream injected into the run files (checked inside
+        # _process_with_backend), so a .vol is no longer required up front.
+        if BACKEND_AVAILABLE:
             return self._process_with_backend(
                 case_name, config_name, primary_files, air_off_files,
                 alphas, betas, n_alpha, n_beta, index, directory
@@ -316,6 +320,31 @@ class ProcessingWorker(QRunnable):
                 case_name, config_name, primary_files,
                 alphas, betas, n_alpha, n_beta, index
             )
+
+    def _injected_balance_cal(self, file_infos):
+        """Build a BalanceCalibration from the matrix freestream injected into
+        the run files (peek the first file's /meta/devices/<balance>), or None
+        when no injected matrix is present, the balance is external, or the
+        backend is unavailable — so Streamlined reduces forces with no .vol."""
+        if not BACKEND_AVAILABLE or not file_infos:
+            return None
+        try:
+            from utils.windtunnel.calibration import balance_cal_from_matrix
+            raw, _ = read_run_file(str(file_infos[0].filepath))
+        except Exception:
+            return None
+        inj = raw.properties.get('injected_balance_cal')
+        if not inj or 'matrix' not in inj:
+            return None
+        if str(raw.properties.get('balance_type', 'internal')
+               ).strip().lower() == 'external':
+            return None
+        try:
+            return balance_cal_from_matrix(
+                inj['matrix'], inj.get('cal_type', 'Linear'),
+                inj.get('distances'), inj.get('serial', ''))
+        except Exception:
+            return None
 
     def _process_with_backend(self, case_name: str, config_name: str,
                                air_on_files: list, air_off_files: list,
@@ -340,18 +369,26 @@ class ProcessingWorker(QRunnable):
             balance_config = self.settings.get('balance_config', 'Force')
             daq.fac.balance_config = balance_config
 
-            # Load balance calibration if available
+            # Balance calibration precedence:
+            #   1. an explicitly loaded .vol OVERRIDES everything (reprocess
+            #      with a different balance cal on demand),
+            #   2. else the calibration MATRIX freestream injected into the
+            #      run files (no .vol needed),
+            #   3. else none — internal data then falls back to demo mode;
+            #      an external (ATE) balance needs no balance cal.
             if self.balance_cal:
                 daq.cal = self.balance_cal
             elif self.balance_cal_file:
-                # Try to load from file
-                daq.cal_balance(self.balance_cal_file, self.settings.get('cal_type', 'Linear'))
+                daq.cal_balance(self.balance_cal_file,
+                                self.settings.get('cal_type', 'Linear'))
+            else:
+                injected = self._injected_balance_cal(
+                    air_on_files or air_off_files)
+                if injected is not None:
+                    daq.cal = injected
 
-            # Load pressure calibration if available
-            if self.pressure_cal:
-                daq.pressure_cal = self.pressure_cal
-            elif self.pressure_cal_file:
-                daq.cal_instruments(self.pressure_cal_file)
+            # Pressure calibration (.pcf) removed — tunnel pressure/temp cal is
+            # injected into the run files and applied by the reduction.
 
             # Set geometry
             mac = self.geometry.get('mac', 1.0)
@@ -1577,9 +1614,9 @@ class DataController(QObject):
             if balance_file:
                 self.load_balance_calibration(balance_file)
 
-            pressure_file = self._resolve_cal_path(cal_config.get('pressure_file'), config_dir)
-            if pressure_file:
-                self.load_pressure_calibration(pressure_file)
+            # Pressure calibration (.pcf) is no longer used — tunnel cal is
+            # injected into the run files. Any 'pressure_file' saved by an
+            # older config is intentionally ignored.
 
             cal_type = cal_config.get('cal_type', 'Linear')
             self.model.cal_type = cal_type

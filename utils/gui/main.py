@@ -122,9 +122,6 @@ class WindTunnelApp:
         self.main_window.data_panel.balance_cal_requested.connect(
             self._on_balance_cal_requested
         )
-        self.main_window.data_panel.pressure_cal_requested.connect(
-            self.controller.load_pressure_calibration
-        )
         self.main_window.data_panel.process_requested.connect(
             self.controller.process_data
         )

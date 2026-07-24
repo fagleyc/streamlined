@@ -265,6 +265,10 @@ class PlotPanel(QWidget):
         config = self.model.plot_config
         sel_alphas = self.filter_toolbar.get_selected_alphas()
         sel_betas = self.filter_toolbar.get_selected_betas()
+        # Selected tunnel-speed step (Mach filter). A single config now holds
+        # every speed increment as distinct per-point Mach values; this
+        # selects which step(s) to visualize (None = all).
+        sel_mach = self.filter_toolbar.get_selected_mach()
 
         # Get axis variables based on plot type
         x_var, y_var = self._get_axis_vars(config.plot_type)
@@ -279,7 +283,8 @@ class PlotPanel(QWidget):
             if not case.has_data:
                 continue
 
-            self._plot_case(case, x_var, y_var, sel_alphas, sel_betas)
+            self._plot_case(case, x_var, y_var, sel_alphas, sel_betas,
+                            sel_mach)
 
         # Set labels
         xlabel = r"$\beta$ [deg]" if beta_xaxis else config.x_label
@@ -372,13 +377,42 @@ class PlotPanel(QWidget):
         elif action == action_fft:
             self.view_fft_requested.emit(case_id, alpha, beta, y_var)
 
+    @staticmethod
+    def _mach_point_mask(case: TestCase, sel_mach: Optional[float]):
+        """Flat boolean mask selecting points whose PER-POINT Mach matches
+        ``sel_mach``, or None when no Mach filtering applies (no selection,
+        no per-point machs, or a length that would misalign with alpha/beta).
+        """
+        if sel_mach is None:
+            return None
+        machs = np.asarray(getattr(case, 'machs', np.array([]))).flatten()
+        n_pts = int(np.asarray(case.alphas).size)
+        if machs.size == 0 or machs.size != n_pts:
+            return None
+        return np.isclose(machs, sel_mach, atol=5e-4)
+
     def _plot_case(self, case: TestCase, x_var: str, y_var: str,
                    sel_alphas: Optional[List[float]],
-                   sel_betas: Optional[List[float]]):
-        """Plot data for a single case with alpha/beta multi-select filtering."""
+                   sel_betas: Optional[List[float]],
+                   sel_mach: Optional[float] = None):
+        """Plot data for a single case with alpha/beta/Mach multi-select
+        filtering. ``sel_mach`` (from the Mach combo) selects one tunnel-speed
+        step to visualize when a config holds several (None = all steps)."""
         lw = self._get_linewidth()
         ms = self._get_markersize()
         beta_xaxis = (x_var == "Beta")
+
+        # Per-point Mach mask (flat, aligned with flat alpha/beta) for the
+        # 1-D multi-speed path; and a whole-case skip for a single-Mach 2-D
+        # grid whose Mach doesn't match the selection.
+        mach_mask_flat = self._mach_point_mask(case, sel_mach)
+        if sel_mach is not None and case.alphas.ndim == 2:
+            case_mach = (case.mach_number if case.mach_number is not None
+                         else (float(np.mean(case.machs))
+                               if len(case.machs) > 0 else None))
+            if case_mach is not None and not np.isclose(
+                    case_mach, sel_mach, atol=5e-4):
+                return
 
         if case.alphas.ndim == 2:
             # --- 2D grid data (rows = alpha, cols = beta) ---
@@ -526,6 +560,8 @@ class PlotPanel(QWidget):
                 for idx, alpha_val in enumerate(unique_alphas):
                     alpha_match = np.isclose(flat_alpha, alpha_val, atol=0.15)
                     mask = alpha_match & beta_mask
+                    if mach_mask_flat is not None:
+                        mask = mask & mach_mask_flat
 
                     if not np.any(mask):
                         continue
@@ -585,45 +621,72 @@ class PlotPanel(QWidget):
 
             single_beta = len(unique_betas) == 1
 
-            for idx, beta_val in enumerate(unique_betas):
-                beta_mask = np.isclose(flat_beta, beta_val, atol=0.15)
-                mask = alpha_mask & beta_mask
+            # Group by tunnel-speed step (Mach) so each speed is a SEPARATE
+            # alpha-sweep trace (never a zigzag connecting points across
+            # speeds). A specific Mach selection -> one group; "All" over a
+            # multi-speed config -> one group per distinct Mach; single-speed
+            # -> one ungrouped pass.
+            machs_flat = np.asarray(
+                getattr(case, 'machs', np.array([]))).flatten()
+            have_mach = (machs_flat.size == len(flat_alpha)
+                         and machs_flat.size > 0)
+            if mach_mask_flat is not None:
+                mach_groups = [(sel_mach, mach_mask_flat)]
+            elif have_mach:
+                distinct = sorted(set(round(float(m), 3) for m in machs_flat))
+                mach_groups = ([(m, np.isclose(machs_flat, m, atol=5e-4))
+                                for m in distinct] if len(distinct) > 1
+                               else [(None, None)])
+            else:
+                mach_groups = [(None, None)]
+            multi_mach = len(mach_groups) > 1
 
-                if not np.any(mask):
-                    continue
+            trace_idx = 0
+            for mach_val, mmask in mach_groups:
+                for beta_val in unique_betas:
+                    beta_mask = np.isclose(flat_beta, beta_val, atol=0.15)
+                    mask = alpha_mask & beta_mask
+                    if mmask is not None:
+                        mask = mask & mmask
 
-                # Sort by alpha within each beta group
-                sort_order = np.argsort(flat_alpha[mask])
+                    if not np.any(mask):
+                        continue
 
-                x_data = self._get_var_data_1d(case, x_var, mask)[sort_order]
-                y_data = self._get_var_data_1d(case, y_var, mask)[sort_order]
+                    # Sort by alpha within each (speed, beta) group
+                    sort_order = np.argsort(flat_alpha[mask])
 
-                if len(x_data) == 0 or len(y_data) == 0:
-                    continue
+                    x_data = self._get_var_data_1d(case, x_var, mask)[sort_order]
+                    y_data = self._get_var_data_1d(case, y_var, mask)[sort_order]
 
-                if single_beta:
-                    label = case.name
-                else:
-                    label = f"{case.name} \u03b2={beta_val:.1f}\u00b0"
+                    if len(x_data) == 0 or len(y_data) == 0:
+                        continue
 
-                alpha_vals = flat_alpha[mask][sort_order]
-                beta_vals = flat_beta[mask][sort_order]
-                ls = _BETA_LINESTYLES[idx % len(_BETA_LINESTYLES)]
-                mk = _BETA_MARKERS[idx % len(_BETA_MARKERS)]
-                self.plot_canvas.plot(x_data, y_data, label=label,
-                                      color=case.color, marker=mk,
-                                      linestyle=ls, linewidth=lw,
-                                      markersize=ms, case_id=case.id,
-                                      alpha_arr=alpha_vals, beta_arr=beta_vals)
-                if self.model.plot_config.show_std_dev:
-                    std_var = self._get_std_var(y_var)
-                    if std_var:
-                        y_std = self._get_var_data_1d(
-                            case, std_var, mask)[sort_order]
-                        if len(y_std) == len(y_data):
-                            self.plot_canvas.fill_between(
-                                x_data, y_data - y_std,
-                                y_data + y_std, color=case.color)
+                    parts = [case.name]
+                    if multi_mach and mach_val is not None:
+                        parts.append(f"M={mach_val:.3f}")
+                    if not single_beta:
+                        parts.append(f"\u03b2={beta_val:.1f}\u00b0")
+                    label = " ".join(parts)
+
+                    alpha_vals = flat_alpha[mask][sort_order]
+                    beta_vals = flat_beta[mask][sort_order]
+                    ls = _BETA_LINESTYLES[trace_idx % len(_BETA_LINESTYLES)]
+                    mk = _BETA_MARKERS[trace_idx % len(_BETA_MARKERS)]
+                    self.plot_canvas.plot(x_data, y_data, label=label,
+                                          color=case.color, marker=mk,
+                                          linestyle=ls, linewidth=lw,
+                                          markersize=ms, case_id=case.id,
+                                          alpha_arr=alpha_vals, beta_arr=beta_vals)
+                    if self.model.plot_config.show_std_dev:
+                        std_var = self._get_std_var(y_var)
+                        if std_var:
+                            y_std = self._get_var_data_1d(
+                                case, std_var, mask)[sort_order]
+                            if len(y_std) == len(y_data):
+                                self.plot_canvas.fill_between(
+                                    x_data, y_data - y_std,
+                                    y_data + y_std, color=case.color)
+                    trace_idx += 1
 
     def _resolve_derivative(self, case: TestCase, var: str) -> Optional[np.ndarray]:
         """Return the full derivative array for `var`, or None if not a derivative."""

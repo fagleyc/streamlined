@@ -554,12 +554,10 @@ class TestSpeedAirStateAndConfig:
         assert extract_configuration_from_filename(
             'run_0007_alpha_2.0_beta_0.0_Hz_30.0.h5') == 'Unknown'
 
-    def test_hz_sweep_splits_into_one_group_per_speed_step(self):
-        # A multi-speed sweep in one folder must split into one group per
-        # distinct filename speed step, each with air-on files AND the shared
-        # speed-0 air-off tares (so the steps are detected distinctly and each
-        # reduces against its tare). Casey: "use the filenames to detect
-        # groupings", organized alpha -> beta -> speed.
+    def test_hz_sweep_stays_in_one_config(self):
+        # All speed steps of a sweep stay in ONE config (Casey: not one config
+        # per speed increment). The distinct speeds are kept as per-point Mach
+        # values downstream; the GUI Mach filter selects between them.
         files = [
             'run_0001_alpha_-2.0_beta_0.0_Hz_0.0.h5',
             'run_0002_alpha_-2.0_beta_0.0_Hz_20.0.h5',
@@ -569,13 +567,14 @@ class TestSpeedAirStateAndConfig:
             'run_0006_alpha_0.0_beta_0.0_Hz_40.0.h5',
         ]
         grouped = group_files_by_configuration(files)
-        assert sorted(grouped.keys()) == ['hz_20', 'hz_40']
-        for key in ('hz_20', 'hz_40'):
-            states = grouped[key]
-            assert len(states['AirOn']) == 2          # the two alphas at speed
-            assert len(states['AirOff']) == 2         # shared speed-0 tares
-            # air-on files all carry this step's speed token
-            assert all('_Hz_' in Path(i.filepath).name for i in states['AirOn'])
+        assert list(grouped.keys()) == ['Unknown']    # ONE config
+        states = grouped['Unknown']
+        assert len(states['AirOn']) == 4              # both nonzero speeds x2 alpha
+        assert len(states['AirOff']) == 2             # the speed-0 tares
+        # ordered alpha -> beta -> speed
+        on = states['AirOn']
+        keys = [(i.alpha, i.beta, i.speed) for i in on]
+        assert keys == sorted(keys)
 
     def test_single_speed_or_mach_directory_not_split(self):
         # One distinct speed (or the legacy mach token) => one group, unchanged.

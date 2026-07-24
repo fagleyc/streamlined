@@ -469,6 +469,31 @@ def read_tdms_file(filepath: str) -> Tuple[RawData, Dict[str, Any]]:
     return raw, properties
 
 
+def _capture_injected_balance_cal(raw: RawData, dev_attrs, decode) -> None:
+    """Capture freestream's injected balance calibration (the computed
+    ``cal_matrix`` + ``cal_type`` + ``cal_distances`` + ``balance_serial``
+    written into the balance device's ``/meta/devices/<id>`` attrs) into
+    ``raw.properties['injected_balance_cal']``, so the reduction can rebuild a
+    BalanceCalibration WITHOUT the .vol (an explicitly loaded .vol still
+    overrides it — see the data controller's precedence)."""
+    try:
+        matrix = np.asarray(dev_attrs['cal_matrix'], dtype=float)
+    except Exception:                                  # noqa: BLE001
+        return
+    cal: Dict[str, Any] = {'matrix': matrix}
+    if 'cal_type' in dev_attrs:
+        cal['cal_type'] = decode(dev_attrs['cal_type'])
+    if 'cal_distances' in dev_attrs:
+        try:
+            cal['distances'] = np.asarray(dev_attrs['cal_distances'],
+                                          dtype=float)
+        except Exception:                              # noqa: BLE001
+            pass
+    if 'balance_serial' in dev_attrs:
+        cal['serial'] = decode(dev_attrs['balance_serial'])
+    raw.properties['injected_balance_cal'] = cal
+
+
 def read_hdf5_file(filepath: str) -> Tuple[RawData, Dict[str, Any]]:
     """
     Read a Conductor HDF5 run file and return data resampled to a
@@ -605,6 +630,15 @@ def read_hdf5_file(filepath: str) -> Tuple[RawData, Dict[str, Any]]:
                 for key in ('balance_group', 'balance_type'):
                     if key not in raw.properties and key in attrs:
                         raw.properties[key] = _decode(attrs[key])
+            # freestream injects the computed balance calibration matrix into
+            # the balance device's /meta/devices/<id> group (cal_matrix +
+            # cal_type + cal_distances), so Streamlined can reduce forces
+            # WITHOUT the .vol. Capture the FIRST device that carries it.
+            if 'devices' in meta:
+                for dev_name, dev in meta['devices'].items():
+                    if hasattr(dev, 'attrs') and 'cal_matrix' in dev.attrs:
+                        _capture_injected_balance_cal(raw, dev.attrs, _decode)
+                        break
         _finalize_balance_markers(raw, present_groups)
         _finalize_load_units(raw, channel_units)
 
@@ -796,6 +830,24 @@ def read_mat_file(filepath: str) -> Tuple[RawData, Dict[str, Any]]:
             for key in ('balance_group', 'balance_type'):
                 if key not in raw.properties and key in ate._fieldnames:
                     raw.properties[key] = _mat_to_python(getattr(ate, key))
+        # freestream's injected balance cal matrix from meta.devices.<id>
+        if _is_mat_struct(devices):
+            for dev_name in devices._fieldnames:
+                dev = getattr(devices, dev_name)
+                if not (_is_mat_struct(dev)
+                        and 'cal_matrix' in dev._fieldnames):
+                    continue
+                cal = {'matrix': np.asarray(
+                    _mat_to_python(dev.cal_matrix), dtype=float)}
+                if 'cal_type' in dev._fieldnames:
+                    cal['cal_type'] = _mat_to_python(dev.cal_type)
+                if 'cal_distances' in dev._fieldnames:
+                    cal['distances'] = np.asarray(
+                        _mat_to_python(dev.cal_distances), dtype=float)
+                if 'balance_serial' in dev._fieldnames:
+                    cal['serial'] = _mat_to_python(dev.balance_serial)
+                raw.properties['injected_balance_cal'] = cal
+                break
     _finalize_balance_markers(raw, present_groups)
     _finalize_load_units(raw, channel_units)
 
@@ -1247,19 +1299,18 @@ def _speed_group_suffix(info: 'FileInfo') -> Optional[str]:
 
 def group_files_by_configuration(files: list) -> Dict[str, Dict[str, list]]:
     """
-    Group run files by configuration, tunnel-speed step, and air state.
+    Group run files by configuration and air state.
 
-    A velocity/Mach sweep records every speed step into ONE folder, so a
-    single "configuration" can contain several distinct tunnel speeds. Those
-    steps must be detected as DISTINCT conditions (else they collapse into
-    one averaged case and the speed increments vanish). Grouping is driven by
-    the FILENAME speed token (the target setpoint — robust; measured speed can
-    jitter or, at low speed, round together). When a configuration holds two
-    or more distinct NON-zero speed steps, it is split into one group per step
-    named ``<config>@<speedkey>`` (or just ``<speedkey>`` for the anonymous
-    freestream 'Unknown' config), and the air-OFF (speed 0) tares are SHARED
-    into every step as its tare. Single-speed / Mach-token-only / legacy
-    directories are unchanged (one group per configuration).
+    A velocity/Mach sweep records every speed step into ONE folder. ALL of a
+    configuration's speed steps stay in a SINGLE group (one case): the speed
+    steps are kept DISTINCT downstream as separate Mach values (per-point,
+    from the reduced tunnel conditions) that the GUI Mach filter selects
+    between, and the MATLAB export lays out as an (alpha, beta, mach) 3-D
+    array. Grouping is NOT split by speed — Casey wants one config per
+    configuration, not one per speed increment.
+
+    Files are ordered alpha -> beta -> speed setpoint within each group (the
+    filename speed token is the robust ordering cue).
 
     Parameters
     ----------
@@ -1269,55 +1320,20 @@ def group_files_by_configuration(files: list) -> Dict[str, Dict[str, list]]:
     Returns
     -------
     dict
-        Nested dictionary: {group_name: {'AirOn': [files], 'AirOff': [files],
+        Nested dictionary: {config_name: {'AirOn': [files], 'AirOff': [files],
         'Unknown': []}}
     """
-    # First pass: bucket by configuration + air state (as before).
-    by_config: Dict[str, Dict[str, list]] = {}
+    grouped: Dict[str, Dict[str, list]] = {}
     for f in files:
         info = parse_tdms_filename(str(f))
-        cfg = by_config.setdefault(
+        cfg = grouped.setdefault(
             info.configuration, {'AirOn': [], 'AirOff': [], 'Unknown': []})
         cfg[info.air_state].append(info)
 
-    grouped: Dict[str, Dict[str, list]] = {}
-    for config, states in by_config.items():
-        air_on = states['AirOn']
-        air_off = states['AirOff']
-        unknown = states['Unknown']
-
-        # Distinct non-zero speed steps among the air-on files (from the
-        # filename token). Only split when there is genuinely more than one.
-        step_keys = []
-        seen = set()
-        for info in air_on:
-            key = _speed_group_suffix(info)
-            if key is None:
-                continue
-            if key not in seen:
-                seen.add(key)
-                step_keys.append(key)
-
-        if len(step_keys) < 2:
-            # No multi-speed sweep here: keep the single-configuration group.
-            grouped[config] = states
-            continue
-
-        # Split: one group per speed step, sharing the air-off tares.
-        base = '' if config == 'Unknown' else config
-        for key in step_keys:
-            gname = key if not base else f"{base}@{key}"
-            step_on = [i for i in air_on if _speed_group_suffix(i) == key]
-            grouped[gname] = {
-                'AirOn': step_on,
-                'AirOff': list(air_off),   # shared speed-0 tares
-                'Unknown': list(unknown),
-            }
-
     # Sort files within each group by alpha, then beta, then speed setpoint.
-    for gname in grouped:
-        for air_state in grouped[gname]:
-            grouped[gname][air_state].sort(
+    for config in grouped:
+        for air_state in grouped[config]:
+            grouped[config][air_state].sort(
                 key=lambda x: (x.alpha, x.beta,
                                x.speed if x.speed is not None else 0.0))
 

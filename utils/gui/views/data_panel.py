@@ -27,7 +27,10 @@ class CalibrationSection(QFrame):
     """Section for calibration file management."""
 
     balance_loaded = pyqtSignal(str)
-    pressure_loaded = pyqtSignal(str)
+    # NOTE: pressure calibration (.pcf) was REMOVED — tunnel pressure/temp
+    # calibration now travels INSIDE each run file (freestream injects the
+    # per-channel coefficients; legacy files fall back to the built-in
+    # DaqBook default). No .pcf is loaded in the GUI anymore.
 
     def __init__(self, settings: AppSettings, parent=None):
         super().__init__(parent)
@@ -64,25 +67,10 @@ class CalibrationSection(QFrame):
 
         layout.addLayout(balance_layout)
 
-        # Pressure calibration
-        pressure_layout = QHBoxLayout()
-        pressure_label = QLabel("Pressure:")
-        pressure_label.setFixedWidth(60)
-        pressure_layout.addWidget(pressure_label)
-
-        self.txt_pressure = QLineEdit()
-        self.txt_pressure.setPlaceholderText("No file loaded")
-        self.txt_pressure.setReadOnly(True)
-        pressure_layout.addWidget(self.txt_pressure)
-
-        self.btn_pressure = QPushButton()
-        self.btn_pressure.setIcon(Icons.folder_open())
-        self.btn_pressure.setToolTip("Load pressure calibration (.PCF)")
-        self.btn_pressure.setFixedSize(28, 28)
-        self.btn_pressure.clicked.connect(self._load_pressure)
-        pressure_layout.addWidget(self.btn_pressure)
-
-        layout.addLayout(pressure_layout)
+        # Pressure calibration (.pcf) intentionally REMOVED — tunnel
+        # pressure/temperature calibration is injected into the run file by
+        # freestream and applied by the reduction; legacy files use the
+        # built-in DaqBook default.
 
         # Status
         self.lbl_status = QLabel("Ready")
@@ -101,25 +89,9 @@ class CalibrationSection(QFrame):
             self.txt_balance.setText(Path(filepath).name)
             self.balance_loaded.emit(filepath)
 
-    def _load_pressure(self):
-        filepath, _ = QFileDialog.getOpenFileName(
-            self, "Load Pressure Calibration",
-            self.settings.last_calibration_directory,
-            "PCF Files (*.PCF *.pcf);;All Files (*.*)"
-        )
-        if filepath:
-            self.settings.last_calibration_directory = str(Path(filepath).parent)
-            self.settings.add_recent_pressure_file(filepath)
-            self.txt_pressure.setText(Path(filepath).name)
-            self.pressure_loaded.emit(filepath)
-
     def set_balance_file(self, filepath: str):
         """Set the balance file display."""
         self.txt_balance.setText(Path(filepath).name if filepath else "")
-
-    def set_pressure_file(self, filepath: str):
-        """Set the pressure file display."""
-        self.txt_pressure.setText(Path(filepath).name if filepath else "")
 
     def set_status(self, message: str, is_error: bool = False):
         """Set status message."""
@@ -145,7 +117,6 @@ class DataPanel(QWidget):
     load_data_requested = pyqtSignal(list, bool)  # List of directories, recursive flag
     append_data_requested = pyqtSignal(str)  # Append single directory (don't clear existing)
     balance_cal_requested = pyqtSignal(str)
-    pressure_cal_requested = pyqtSignal(str)
     geometry_requested = pyqtSignal()
     process_requested = pyqtSignal()
     case_delete_requested = pyqtSignal(str)  # case_id
@@ -249,7 +220,6 @@ class DataPanel(QWidget):
     def _connect_signals(self):
         """Connect internal signals."""
         self.cal_section.balance_loaded.connect(self.balance_cal_requested.emit)
-        self.cal_section.pressure_loaded.connect(self.pressure_cal_requested.emit)
 
         # Model signals
         self.model.cases_changed.connect(self._update_case_list)

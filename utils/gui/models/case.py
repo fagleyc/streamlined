@@ -537,20 +537,28 @@ class CaseCollection:
 
     @property
     def all_mach_numbers(self) -> List[float]:
-        """Get all unique Mach numbers.
+        """Get all unique PER-POINT Mach numbers across cases.
+
+        A single config now holds every speed step (a velocity/Mach sweep is
+        one case with multiple distinct per-point Mach values), so the filter
+        must enumerate the DISTINCT per-point Machs — not one-per-case — for
+        the user to select which speed step to visualize.
 
         Rounded to 3 decimals: a low-speed (LSWT) sweep spans only Mach
         0-0.1, so 2 decimals would merge adjacent speed steps (e.g. Hz 20 ->
         M0.031 and Hz 25 -> M0.038 both round to 0.03). 3 decimals keeps the
-        distinct steps visible in the Mach filter for both the low-speed
-        (0-0.1) and subsonic (0-0.6) tunnels.
+        distinct steps visible for both the low-speed (0-0.1) and subsonic
+        (0-0.6) tunnels.
         """
         machs = set()
         for case in self:
-            if case.mach_number is not None:
+            if not case.has_data:
+                continue
+            if len(case.machs) > 0:
+                for m in np.asarray(case.machs).flatten():
+                    machs.add(round(float(m), 3))
+            elif case.mach_number is not None:
                 machs.add(round(case.mach_number, 3))
-            elif len(case.machs) > 0:
-                machs.add(round(float(np.mean(case.machs)), 3))
         return sorted(machs)
 
     @property

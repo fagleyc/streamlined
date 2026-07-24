@@ -395,3 +395,33 @@ def calc_coeffs(cal: BalanceCalibration, cal_type: str = 'Linear') -> BalanceCal
     cal.bias = bias
 
     return cal
+
+
+def balance_cal_from_matrix(matrix, cal_type: str = 'Linear',
+                            distances=None, serial: str = ''
+                            ) -> BalanceCalibration:
+    """Build a BalanceCalibration DIRECTLY from a stored coefficient matrix.
+
+    freestream computes the balance calibration from the configured .vol and
+    injects the resulting matrix into each run file's
+    ``/meta/devices/<balance>`` (attrs ``cal_matrix`` / ``cal_type`` /
+    ``cal_distances``). This reconstructs the calibration the reduction needs
+    WITHOUT an external .vol: :func:`~utils.windtunnel.transforms.calc_brf_forces`
+    consumes exactly ``coeffs`` (the ``(6*order, 6)`` matrix), ``cal_type``
+    (to reproduce the polynomial order of the bridge volts) and
+    ``distances.values`` (the x1/x2/y1/y2 moment arms, keyed so
+    :func:`~utils.windtunnel.transforms.get_distance_values` finds them).
+
+    ``distances`` is the injected ``[x1, x2, y1, y2]`` sequence.
+    """
+    cal = BalanceCalibration()
+    cal.coeffs = np.asarray(matrix, dtype=float)
+    cal.cal_type = str(cal_type or 'Linear')
+    if distances is not None:
+        d = np.asarray(distances, dtype=float).flatten()
+        names = ('x1', 'x2', 'y1', 'y2')
+        cal.distances = Distances(values={
+            names[i]: float(d[i]) for i in range(min(d.size, len(names)))})
+    cal.description = BalanceDescription(serial_number=str(serial or ''))
+    cal.file = '<injected: run-file balance cal matrix>'
+    return cal

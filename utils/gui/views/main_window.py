@@ -735,8 +735,6 @@ class MainWindow(QMainWindow):
         """Update the calibration file display from model."""
         if self.model.balance_cal_file:
             self.data_panel.cal_section.set_balance_file(str(self.model.balance_cal_file))
-        if self.model.pressure_cal_file:
-            self.data_panel.cal_section.set_pressure_file(str(self.model.pressure_cal_file))
         # Sync calibration names to case list context menu
         self.data_panel.case_list.set_calibration_names(
             self.model.calibration_names)

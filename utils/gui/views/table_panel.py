@@ -1246,6 +1246,57 @@ class TablePanel(QWidget):
         raw_means = {k: _shape(v) for k, v in per_raw.items()}
         return means, raw_means
 
+    @staticmethod
+    def _case_3d_grid(case: TestCase):
+        """Return ``(to3d, axes)`` for laying out per-point arrays as a
+        SQUEEZED (alpha, beta, mach) grid, or ``(None, None)`` when per-point
+        Mach is unavailable/misaligned.
+
+        A single config now holds every tunnel-speed step; the MATLAB export
+        lays each data series out over (alpha, beta, mach) and condenses any
+        singleton dimension (Casey's request). ``to3d(flat)`` maps a per-point
+        flat array (in the case's sorted point order) into the squeezed grid
+        by explicit (i,j,k) placement (missing cells -> NaN), so it is robust
+        to irregular/incomplete grids. ``axes`` carries the unique
+        alpha/beta/mach vectors plus the pre-squeeze dim order and shape.
+        """
+        try:
+            a = np.asarray(case.alphas, dtype=float).flatten()
+            b = np.asarray(case.betas, dtype=float).flatten()
+            m = np.asarray(getattr(case, 'machs', np.array([])),
+                           dtype=float).flatten()
+        except Exception:
+            return None, None
+        n = a.size
+        if n == 0 or b.size != n or m.size != n:
+            return None, None
+        ra, rb, rm = np.round(a, 1), np.round(b, 1), np.round(m, 3)
+        ua = sorted(set(ra.tolist()))
+        ub = sorted(set(rb.tolist()))
+        um = sorted(set(rm.tolist()))
+        ia = {v: i for i, v in enumerate(ua)}
+        ib = {v: i for i, v in enumerate(ub)}
+        im = {v: i for i, v in enumerate(um)}
+        shape = (len(ua), len(ub), len(um))
+        pts = [(ia[ra[p]], ib[rb[p]], im[rm[p]]) for p in range(n)]
+
+        def to3d(flat):
+            flat = np.asarray(flat, dtype=float).flatten()
+            g = np.full(shape, np.nan)
+            for p, (i, j, k) in enumerate(pts):
+                if p < flat.size:
+                    g[i, j, k] = flat[p]
+            return np.squeeze(g)
+
+        axes = {
+            'alpha': np.array(ua, dtype=float),
+            'beta': np.array(ub, dtype=float),
+            'mach': np.array(um, dtype=float),
+            'dim_order': np.array(['alpha', 'beta', 'mach'], dtype=object),
+            'shape': np.array(shape, dtype=float),
+        }
+        return to3d, axes
+
     def _build_categorized_struct(self, case: TestCase) -> dict:
         """
         Build a nested dict for MAT/HDF5 export organized by the
@@ -1269,6 +1320,10 @@ class TablePanel(QWidget):
             return {}
 
         out: dict = {}
+        # Lay each per-point series out as a squeezed (alpha, beta, mach)
+        # 3-D array when per-point Mach is available (a multi-speed config);
+        # otherwise arrays keep their native (alpha[, beta]) shape.
+        to3d, axes3d = self._case_3d_grid(case)
         cats = categorize_variables(sorted(means.keys()))
         # Map category display name -> safe struct field name
         category_keys = {
@@ -1294,7 +1349,7 @@ class TablePanel(QWidget):
                 if arr is None:
                     continue
                 safe = self._sanitize_matlab_name(n)
-                sub[safe] = np.asarray(arr)
+                sub[safe] = to3d(arr) if to3d is not None else np.asarray(arr)
             if sub:
                 out[key] = sub
 
@@ -1303,8 +1358,14 @@ class TablePanel(QWidget):
             raw_sub = {}
             for n, arr in raw_means.items():
                 safe = self._sanitize_matlab_name(n)
-                raw_sub[safe] = np.asarray(arr)
+                raw_sub[safe] = (to3d(arr) if to3d is not None
+                                 else np.asarray(arr))
             out['Raw'] = raw_sub
+
+        # Axis vectors + dim order for the (alpha, beta, mach) grid, so the
+        # 3-D arrays above are self-describing in MATLAB.
+        if axes3d is not None:
+            out['Axes'] = axes3d
 
         return out
 
