@@ -74,6 +74,19 @@ def parse_filename_simple(filepath: str) -> FileInfoSimple:
     else:
         air_state = 'Unknown'
 
+    # Freestream run files carry no AirOn/AirOff token; the condition is
+    # encoded in the SPEED token instead (speed 0 -> tare/air-off). Handle
+    # EVERY selectable speed unit (Hz/ftps/mps/RPM/mach) so a non-Mach
+    # velocity sweep isn't left 'Unknown'. Mirrors the backend
+    # extract_air_state_from_filename.
+    if air_state == 'Unknown':
+        speed_match = re.search(
+            r'(?:Hz|ftps|mps|RPM|mach)[_\s]*(-?\d+\.?\d*)',
+            filename, re.IGNORECASE)
+        if speed_match:
+            air_state = ('AirOff' if abs(float(speed_match.group(1))) < 1e-6
+                         else 'AirOn')
+
     # Extract configuration - everything between AirState and _Alpha_
     # Pattern: (AirOn|AirOff)_<configuration>_Alpha_...
     config_match = re.match(
@@ -91,6 +104,14 @@ def parse_filename_simple(filepath: str) -> FileInfoSimple:
             configuration = alt_match.group(1)
             # Remove AirOn/AirOff if present
             configuration = re.sub(r'^(AirOn|AirOff)_?', '', configuration, flags=re.IGNORECASE)
+            # Freestream run files are named run_<NNNN>_alpha_...; the run
+            # counter is not a configuration, so map it to Unknown to keep
+            # all runs of a directory grouped together (mirrors the backend
+            # extract_configuration_from_filename).
+            if re.fullmatch(r'run_?\d+', configuration, re.IGNORECASE):
+                configuration = 'Unknown'
+            elif not configuration:
+                configuration = 'Unknown'
         else:
             configuration = 'Unknown'
 

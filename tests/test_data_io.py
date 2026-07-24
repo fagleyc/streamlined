@@ -34,6 +34,8 @@ from utils.windtunnel.data_io import (  # noqa: E402
     classify_files_by_condition, extract_mach_from_filename,
     extract_speed_from_filename, extract_sort_key_from_filename,
     speed_condition_key, copy_balance_markers,
+    extract_air_state_from_filename, extract_configuration_from_filename,
+    group_files_by_configuration,
     BALANCE_GROUP_INTERNAL, BALANCE_GROUP_EXTERNAL,
 )
 from utils.windtunnel.transforms import (  # noqa: E402
@@ -514,6 +516,56 @@ class TestSpeedOrdering:
             'run_d_alpha_0.0_beta_5.0_Hz_10.0.h5',   # a0 b5 s10
             'run_a_alpha_2.0_beta_0.0_Hz_30.0.h5',   # a2 b0 s30
         ]
+
+
+class TestSpeedAirStateAndConfig:
+    """The GUI groups a directory by (configuration, air_state) before it
+    reduces. Freestream files carry NO AirOn/AirOff token and (for a
+    non-Mach sweep) NO mach token — the air state must come from the SPEED
+    token, else every file lands 'Unknown', the reducer finds zero AirOn
+    files, and NO configuration is detected (the bug this guards)."""
+
+    def test_hz_air_state_from_speed_token(self):
+        assert extract_air_state_from_filename(
+            'run_0001_alpha_0.0_beta_0.0_Hz_0.0.h5') == 'AirOff'
+        assert extract_air_state_from_filename(
+            'run_0002_alpha_0.0_beta_0.0_Hz_30.0.h5') == 'AirOn'
+
+    def test_air_state_every_speed_unit(self):
+        for tag, on, off in (('ftps', '50.0', '0.0'), ('mps', '15.0', '0.0'),
+                             ('RPM', '600', '0'), ('mach', '0.30', '0.00')):
+            assert extract_air_state_from_filename(
+                f'run_0001_alpha_0.0_beta_0.0_{tag}_{off}.h5') == 'AirOff'
+            assert extract_air_state_from_filename(
+                f'run_0002_alpha_0.0_beta_0.0_{tag}_{on}.h5') == 'AirOn'
+
+    def test_explicit_airon_airoff_still_wins(self):
+        assert extract_air_state_from_filename(
+            'AirOff_clean_Alpha_0.0_Beta_0.0.tdms') == 'AirOff'
+        assert extract_air_state_from_filename(
+            'AirOn_clean_Alpha_0.0_Beta_0.0.tdms') == 'AirOn'
+
+    def test_run_counter_not_a_configuration(self):
+        # run_NNNN is a counter, not a model config — all runs group together
+        assert extract_configuration_from_filename(
+            'run_0007_alpha_2.0_beta_0.0_Hz_30.0.h5') == 'Unknown'
+
+    def test_hz_sweep_groups_into_one_config_with_airon(self):
+        files = [
+            'run_0001_alpha_-2.0_beta_0.0_Hz_0.0.h5',
+            'run_0002_alpha_-2.0_beta_0.0_Hz_20.0.h5',
+            'run_0003_alpha_-2.0_beta_0.0_Hz_40.0.h5',
+            'run_0004_alpha_0.0_beta_0.0_Hz_0.0.h5',
+            'run_0005_alpha_0.0_beta_0.0_Hz_20.0.h5',
+            'run_0006_alpha_0.0_beta_0.0_Hz_40.0.h5',
+        ]
+        grouped = group_files_by_configuration(files)
+        # exactly one detected configuration, and it HAS air-on files
+        assert list(grouped.keys()) == ['Unknown']
+        states = grouped['Unknown']
+        assert len(states['AirOn']) == 4
+        assert len(states['AirOff']) == 2
+        assert len(states['Unknown']) == 0
 
 
 def _external_raw_dict_speed(value, unit='hz', setpoints=None, n=N_FAST):

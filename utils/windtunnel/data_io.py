@@ -1144,8 +1144,17 @@ def extract_air_state_from_filename(filepath: str) -> str:
         return 'AirOff'
 
     # Freestream run files drop the AirOn/AirOff token and encode the
-    # condition in the mach value instead (mach 0 -> tare/air-off),
-    # mirroring classify_files_by_condition.
+    # condition in the SPEED token instead (speed 0 -> tare/air-off),
+    # mirroring classify_files_by_condition. This covers EVERY selectable
+    # speed unit — Hz/ftps/mps/RPM as well as the legacy mach token
+    # (extract_speed_from_filename parses all of them), so a non-Mach
+    # velocity sweep is no longer left 'Unknown' (which starved the
+    # reducer of AirOn files and detected zero configurations).
+    speed_value, _ = extract_speed_from_filename(filepath)
+    if speed_value is not None:
+        return 'AirOff' if abs(speed_value) < 1e-6 else 'AirOn'
+
+    # Last resort: the canonical mach token directly.
     mach = extract_mach_from_filename(filepath)
     if mach is not None:
         return 'AirOff' if abs(mach) < 1e-6 else 'AirOn'
