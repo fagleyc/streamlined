@@ -537,13 +537,20 @@ class CaseCollection:
 
     @property
     def all_mach_numbers(self) -> List[float]:
-        """Get all unique Mach numbers."""
+        """Get all unique Mach numbers.
+
+        Rounded to 3 decimals: a low-speed (LSWT) sweep spans only Mach
+        0-0.1, so 2 decimals would merge adjacent speed steps (e.g. Hz 20 ->
+        M0.031 and Hz 25 -> M0.038 both round to 0.03). 3 decimals keeps the
+        distinct steps visible in the Mach filter for both the low-speed
+        (0-0.1) and subsonic (0-0.6) tunnels.
+        """
         machs = set()
         for case in self:
             if case.mach_number is not None:
-                machs.add(round(case.mach_number, 2))
+                machs.add(round(case.mach_number, 3))
             elif len(case.machs) > 0:
-                machs.add(round(float(np.mean(case.machs)), 2))
+                machs.add(round(float(np.mean(case.machs)), 3))
         return sorted(machs)
 
     @property

@@ -526,6 +526,7 @@ def read_hdf5_file(filepath: str) -> Tuple[RawData, Dict[str, Any]]:
         # Collect all channels and their time vectors
         channels = {}
         channel_units = {}
+        channel_cal = {}
         present_groups = set()
 
         for group_name, group in h5_file.items():
@@ -546,6 +547,23 @@ def read_hdf5_file(filepath: str) -> Tuple[RawData, Dict[str, Any]]:
                 attrs = dataset.attrs
                 if 'unit' in attrs:
                     channel_units[channel_name] = _decode(attrs['unit'])
+                # Freestream injects per-channel tunnel calibration
+                # coefficients (cal_slope/cal_offset/cal_unit/cal_type) so the
+                # reduction converts raw volts -> engineering units WITHOUT an
+                # external .pcf, and skips scaling for already-engineering
+                # instruments (Heise, cal_type='identity'). See
+                # extract_channel_cal / calc_tunnel_conditions.
+                if 'cal_type' in attrs or 'cal_slope' in attrs:
+                    channel_cal[channel_name] = {
+                        'slope': float(attrs['cal_slope'])
+                        if 'cal_slope' in attrs else 1.0,
+                        'offset': float(attrs['cal_offset'])
+                        if 'cal_offset' in attrs else 0.0,
+                        'unit': _decode(attrs['cal_unit'])
+                        if 'cal_unit' in attrs else '',
+                        'type': _decode(attrs['cal_type'])
+                        if 'cal_type' in attrs else 'linear',
+                    }
                 if 'wf_increment' in attrs and 'wf_samples' in attrs:
                     dt = float(attrs['wf_increment'])
                     n_samples = int(attrs['wf_samples'])
@@ -562,6 +580,11 @@ def read_hdf5_file(filepath: str) -> Tuple[RawData, Dict[str, Any]]:
 
         # Resample everything onto the fastest channel's time base
         _resample_channels_to_fastest(channels, raw)
+
+        # Per-channel injected tunnel calibration (empty for legacy files ->
+        # the reduction falls back to the built-in DaqBook default cal).
+        if channel_cal:
+            raw.properties['channel_cal'] = channel_cal
 
         # Root attributes carry the run parameters (run_number, air_state,
         # inherited run-sheet params, ...) -> file properties
@@ -800,12 +823,16 @@ def copy_balance_markers(raw: RawData,
     ride along as dict entries: ``balance_type`` drives
     :func:`~.transforms.is_external_balance_data`, ``load_units`` drives
     the SI -> lb/in-lb conversion in
-    :func:`~.external_balance.external_loads_to_ips`, and the speed
+    :func:`~.external_balance.external_loads_to_ips`, the speed
     markers (``speed_value`` / ``speed_unit`` / ``speed_setpoints``)
-    carry the tunnel-speed sweep dimension through to the reducers.
+    carry the tunnel-speed sweep dimension through to the reducers, and
+    ``channel_cal`` carries freestream's injected per-channel tunnel
+    calibration (so :func:`~.coefficients.calc_tunnel_conditions` converts
+    raw volts -> engineering units with no external .pcf).
     """
     for key in ('balance_type', 'load_units',
-                'speed_value', 'speed_unit', 'speed_setpoints'):
+                'speed_value', 'speed_unit', 'speed_setpoints',
+                'channel_cal'):
         if key in raw.properties:
             channel_dict[key] = raw.properties[key]
     return channel_dict
@@ -1170,6 +1197,12 @@ class FileInfo:
     air_state: str
     alpha: float
     beta: float
+    # The tunnel-speed SETPOINT parsed from the filename token (the TARGET
+    # value — bulletproof for grouping, since measured speed can jitter or
+    # collapse). ``speed`` is None when no speed token is present; ``speed_unit``
+    # is one of 'hz'/'ft/s'/'m/s'/'rpm'/'mach'.
+    speed: Optional[float] = None
+    speed_unit: Optional[str] = None
 
 
 def parse_tdms_filename(filepath: str) -> FileInfo:
@@ -1190,19 +1223,43 @@ def parse_tdms_filename(filepath: str) -> FileInfo:
     alpha, beta = extract_alpha_beta_from_filename(str(filepath))
     config = extract_configuration_from_filename(str(filepath))
     air_state = extract_air_state_from_filename(str(filepath))
+    speed, speed_unit = extract_speed_from_filename(str(filepath))
 
     return FileInfo(
         filepath=filepath,
         configuration=config,
         air_state=air_state,
         alpha=alpha,
-        beta=beta
+        beta=beta,
+        speed=speed,
+        speed_unit=speed_unit,
     )
+
+
+def _speed_group_suffix(info: 'FileInfo') -> Optional[str]:
+    """The filename speed-step key for a file (e.g. 'Hz_20', 'mach_0.30'),
+    or None when the file carries no resolvable tunnel-speed token. Uses the
+    filename TARGET setpoint — the bulletproof grouping cue Casey asked for."""
+    if info.speed is None or info.speed_unit is None:
+        return None
+    return speed_condition_key(info.speed, info.speed_unit)
 
 
 def group_files_by_configuration(files: list) -> Dict[str, Dict[str, list]]:
     """
-    Group TDMS files by configuration and air state.
+    Group run files by configuration, tunnel-speed step, and air state.
+
+    A velocity/Mach sweep records every speed step into ONE folder, so a
+    single "configuration" can contain several distinct tunnel speeds. Those
+    steps must be detected as DISTINCT conditions (else they collapse into
+    one averaged case and the speed increments vanish). Grouping is driven by
+    the FILENAME speed token (the target setpoint — robust; measured speed can
+    jitter or, at low speed, round together). When a configuration holds two
+    or more distinct NON-zero speed steps, it is split into one group per step
+    named ``<config>@<speedkey>`` (or just ``<speedkey>`` for the anonymous
+    freestream 'Unknown' config), and the air-OFF (speed 0) tares are SHARED
+    into every step as its tare. Single-speed / Mach-token-only / legacy
+    directories are unchanged (one group per configuration).
 
     Parameters
     ----------
@@ -1212,21 +1269,56 @@ def group_files_by_configuration(files: list) -> Dict[str, Dict[str, list]]:
     Returns
     -------
     dict
-        Nested dictionary: {config_name: {'AirOn': [files], 'AirOff': [files]}}
+        Nested dictionary: {group_name: {'AirOn': [files], 'AirOff': [files],
+        'Unknown': []}}
     """
-    grouped = {}
-
+    # First pass: bucket by configuration + air state (as before).
+    by_config: Dict[str, Dict[str, list]] = {}
     for f in files:
         info = parse_tdms_filename(str(f))
+        cfg = by_config.setdefault(
+            info.configuration, {'AirOn': [], 'AirOff': [], 'Unknown': []})
+        cfg[info.air_state].append(info)
 
-        if info.configuration not in grouped:
-            grouped[info.configuration] = {'AirOn': [], 'AirOff': [], 'Unknown': []}
+    grouped: Dict[str, Dict[str, list]] = {}
+    for config, states in by_config.items():
+        air_on = states['AirOn']
+        air_off = states['AirOff']
+        unknown = states['Unknown']
 
-        grouped[info.configuration][info.air_state].append(info)
+        # Distinct non-zero speed steps among the air-on files (from the
+        # filename token). Only split when there is genuinely more than one.
+        step_keys = []
+        seen = set()
+        for info in air_on:
+            key = _speed_group_suffix(info)
+            if key is None:
+                continue
+            if key not in seen:
+                seen.add(key)
+                step_keys.append(key)
 
-    # Sort files within each group by alpha, then beta
-    for config in grouped:
-        for air_state in grouped[config]:
-            grouped[config][air_state].sort(key=lambda x: (x.alpha, x.beta))
+        if len(step_keys) < 2:
+            # No multi-speed sweep here: keep the single-configuration group.
+            grouped[config] = states
+            continue
+
+        # Split: one group per speed step, sharing the air-off tares.
+        base = '' if config == 'Unknown' else config
+        for key in step_keys:
+            gname = key if not base else f"{base}@{key}"
+            step_on = [i for i in air_on if _speed_group_suffix(i) == key]
+            grouped[gname] = {
+                'AirOn': step_on,
+                'AirOff': list(air_off),   # shared speed-0 tares
+                'Unknown': list(unknown),
+            }
+
+    # Sort files within each group by alpha, then beta, then speed setpoint.
+    for gname in grouped:
+        for air_state in grouped[gname]:
+            grouped[gname][air_state].sort(
+                key=lambda x: (x.alpha, x.beta,
+                               x.speed if x.speed is not None else 0.0))
 
     return grouped

@@ -99,6 +99,69 @@ def _convert_thermocouple_to_celsius(raw_temp: np.ndarray,
     return out_degc
 
 
+# Built-in DaqBook tunnel-transducer slopes (engineering units per volt),
+# taken verbatim from the DaqBook driver's ChannelConfig defaults, which are
+# themselves the historical PRESSLOPvxi18.PCF values. These are the fallback
+# when a run file carries NO injected per-channel calibration AND no external
+# .pcf is supplied -> legacy DaqBook data reduces with no cal file at all.
+DAQBOOK_DEFAULT_PRESSURE_SLOPES = {'Pdiff': 0.386949, 'Ptot': 1.92604}
+DAQBOOK_DEFAULT_TEMP_SLOPE = 10.0        # 0.1 V/degC -> degC
+
+
+def _pressure_channel_to_psi(raw_channel: np.ndarray, channel_key: str,
+                             channel_cal: Optional[Dict[str, Any]],
+                             pressure_cal: Optional[Dict[str, Any]],
+                             cal_channel_name: str) -> np.ndarray:
+    """Convert one raw tunnel pressure channel to engineering PSI.
+
+    Priority (Casey's unified pipeline):
+      1. freestream INJECTED per-channel cal (``channel_cal[channel_key]``):
+         ``identity`` -> the recorded array is already PSI (Heise); ``linear``
+         -> raw*slope + offset. This removes the need for a .pcf.
+      2. a legacy external .pcf (``pressure_cal[cal_channel_name].slope``) if
+         one was explicitly supplied.
+      3. the built-in DaqBook default slope (no cal file needed).
+    """
+    arr = np.asarray(raw_channel, dtype=float)
+    ical = (channel_cal or {}).get(channel_key)
+    if ical is not None:
+        if str(ical.get('type', 'linear')).lower() == 'identity':
+            return arr                                   # already engineering
+        return arr * float(ical.get('slope', 1.0)) + float(ical.get('offset', 0.0))
+    if pressure_cal and cal_channel_name in pressure_cal:
+        return arr * pressure_cal[cal_channel_name].slope
+    return arr * DAQBOOK_DEFAULT_PRESSURE_SLOPES[channel_key]
+
+
+def _temperature_channel_to_celsius(raw_channel: np.ndarray,
+                                    channel_cal: Optional[Dict[str, Any]],
+                                    temp_cal_mode: str) -> np.ndarray:
+    """Convert one raw tunnel temperature channel to Celsius.
+
+    With an INJECTED cal: ``identity`` -> already engineering (Heise, in its
+    ``cal_unit`` degF/degC); ``linear`` -> raw*slope + offset in ``cal_unit``;
+    then the ``cal_unit`` is converted to Celsius. With NO injected cal, the
+    legacy DaqBook thermocouple path (raw*10, auto degC/degF) is used — i.e.
+    the built-in DaqBook default.
+    """
+    arr = np.asarray(raw_channel, dtype=float)
+    ical = (channel_cal or {}).get('Temp')
+    if ical is not None:
+        if str(ical.get('type', 'linear')).lower() == 'identity':
+            eng = arr
+        else:
+            eng = arr * float(ical.get('slope', 1.0)) + float(ical.get('offset', 0.0))
+        unit = str(ical.get('unit', 'degC')).strip().lower()
+        if unit in ('degf', 'f', 'fahrenheit', 'deg f'):
+            return (eng - 32.0) * 5.0 / 9.0
+        if unit in ('degk', 'k', 'kelvin'):
+            return eng - C_TO_K
+        if unit in ('degr', 'r', 'rankine'):
+            return (eng - 491.67) * 5.0 / 9.0
+        return eng                                       # degC
+    return _convert_thermocouple_to_celsius(arr, temp_cal_mode)
+
+
 def calc_tunnel_conditions(raw_data: Dict[str, np.ndarray],
                            pressure_cal: Dict[str, Any],
                            facility: str = 'SWT',
@@ -134,6 +197,10 @@ def calc_tunnel_conditions(raw_data: Dict[str, np.ndarray],
     """
     cond = TunnelConditions()
 
+    # freestream's injected per-channel tunnel calibration (rides in the raw
+    # dict via copy_balance_markers). None/absent -> built-in DaqBook default.
+    channel_cal = raw_data.get('channel_cal') if hasattr(raw_data, 'get') else None
+
     # Ensure channel names have 'P' prefix
     if not pdiff_channel.startswith('P'):
         pdiff_channel = 'P' + pdiff_channel
@@ -141,30 +208,30 @@ def calc_tunnel_conditions(raw_data: Dict[str, np.ndarray],
         p0_channel = 'P' + p0_channel
 
     if facility == 'SWT':
-        # Get calibration slopes
-        pdiff_slope = pressure_cal[pdiff_channel].slope
-        p0_slope = pressure_cal[p0_channel].slope
-
         gm1 = GAMMA - 1.0  # gamma - 1 = 0.4
         g_ratio = gm1 / GAMMA  # (gamma-1)/gamma = 2/7
 
         # ---------------------------------------------------------------
-        # Measured quantities (converted to SI)
+        # Measured quantities (converted to SI) — instrument-based cal:
+        # injected coefficients win, else built-in DaqBook default. An
+        # already-engineering-unit channel (Heise, cal_type='identity') is
+        # passed through with NO slope/x10, fixing the shifted-by-10 bug.
         # ---------------------------------------------------------------
 
         # Differential pressure: dP = P0 - P_static (psi, then Pa)
-        dP_psi = raw_data['Pdiff'] * pdiff_slope
+        dP_psi = _pressure_channel_to_psi(
+            raw_data['Pdiff'], 'Pdiff', channel_cal, pressure_cal, pdiff_channel)
         dP_Pa = dP_psi * PSI_TO_PA
 
         # Total (stagnation) pressure P0 (Pa)
-        P0_Pa = raw_data['Ptot'] * p0_slope * PSI_TO_PA
+        P0_psi = _pressure_channel_to_psi(
+            raw_data['Ptot'], 'Ptot', channel_cal, pressure_cal, p0_channel)
+        P0_Pa = P0_psi * PSI_TO_PA
 
         # Total (stagnation) temperature T0
         # Thermocouple is in the settling chamber, so it reads T0.
-        # Slope is 0.1 V/deg (either degF or degC depending on cal vintage).
-        # See _convert_thermocouple_to_celsius for the branch logic.
-        T0_C = _convert_thermocouple_to_celsius(
-            raw_data['Temp'], temp_cal_mode)
+        T0_C = _temperature_channel_to_celsius(
+            raw_data['Temp'], channel_cal, temp_cal_mode)
         T0_K = T0_C + C_TO_K
 
         # ---------------------------------------------------------------
@@ -234,10 +301,49 @@ def calc_tunnel_conditions(raw_data: Dict[str, np.ndarray],
         cond.Re = Re                     # Reynolds number
 
     elif facility == 'LSWT':
-        # Low Speed Wind Tunnel
-        pdiff_slope = pressure_cal[pdiff_channel].slope
-        cond.Q = raw_data['Pdiff'] * pdiff_slope
+        # Low Speed Wind Tunnel — q measured directly as the differential
+        # pressure. Instrument-based cal: injected coefficients win (Heise
+        # identity passes through in psi), else built-in DaqBook default.
+        cond.Q = _pressure_channel_to_psi(
+            raw_data['Pdiff'], 'Pdiff', channel_cal, pressure_cal, pdiff_channel)
         cond.Q_mks = cond.Q * PSI_TO_PA
+
+        # Derive velocity / Mach / Re from q and the ambient state when the
+        # tunnel-conditions instrument (the Heise, in the LSWT mode) provides
+        # total pressure and temperature. LOW-SPEED / incompressible relations
+        # (M < 0.1, so static ~= total): rho = P0/(R*T0), U = sqrt(2q/rho),
+        # a = sqrt(gamma*R*T0), M = U/a. This gives the DISTINCT per-speed Mach
+        # steps (0-0.1) the Mach filter/grouping needs. Without Ptot/Temp only
+        # q is populated (graceful — legacy LSWT behavior).
+        if 'Ptot' in raw_data and 'Temp' in raw_data:
+            q_Pa = np.maximum(cond.Q_mks, 0.0)
+            P0_Pa = _pressure_channel_to_psi(
+                raw_data['Ptot'], 'Ptot', channel_cal, pressure_cal,
+                p0_channel) * PSI_TO_PA
+            T0_C = _temperature_channel_to_celsius(
+                raw_data['Temp'], channel_cal, temp_cal_mode)
+            T0_K = T0_C + C_TO_K
+
+            rho = P0_Pa / (R_AIR * T0_K)                 # ~static at low speed
+            rho = np.maximum(rho, 1e-6)
+            U_inf = np.sqrt(2.0 * q_Pa / rho)
+            a = np.sqrt(GAMMA * R_AIR * T0_K)
+            Mach = U_inf / a
+
+            mu = MU_REF * np.power(T0_K / T_REF, 1.5) * \
+                (T_REF + S_SUTH) / (T0_K + S_SUTH)
+            ref_length_m = ref_length_in * 0.0254
+            Re = rho * U_inf * ref_length_m / mu
+
+            cond.P_tot = P0_Pa
+            cond.P_static = P0_Pa - q_Pa
+            cond.T0 = T0_C
+            cond.T = T0_C                                # ~static at low speed
+            cond.rho = rho
+            cond.Mach = Mach
+            cond.a = a
+            cond.U_inf = U_inf
+            cond.Re = Re
 
     elif facility == 'TST':
         # Trisonic Tunnel - compressible flow calculation

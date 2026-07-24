@@ -44,6 +44,10 @@ from utils.windtunnel.transforms import (  # noqa: E402
 from utils.windtunnel.reduction import (  # noqa: E402
     reduce_single_point, reduce_steady_state, to_dataframe,
 )
+from utils.windtunnel.coefficients import (  # noqa: E402
+    calc_tunnel_conditions, _pressure_channel_to_psi,
+    _temperature_channel_to_celsius,
+)
 from utils.windtunnel.transforms import Geometry  # noqa: E402
 
 
@@ -550,7 +554,12 @@ class TestSpeedAirStateAndConfig:
         assert extract_configuration_from_filename(
             'run_0007_alpha_2.0_beta_0.0_Hz_30.0.h5') == 'Unknown'
 
-    def test_hz_sweep_groups_into_one_config_with_airon(self):
+    def test_hz_sweep_splits_into_one_group_per_speed_step(self):
+        # A multi-speed sweep in one folder must split into one group per
+        # distinct filename speed step, each with air-on files AND the shared
+        # speed-0 air-off tares (so the steps are detected distinctly and each
+        # reduces against its tare). Casey: "use the filenames to detect
+        # groupings", organized alpha -> beta -> speed.
         files = [
             'run_0001_alpha_-2.0_beta_0.0_Hz_0.0.h5',
             'run_0002_alpha_-2.0_beta_0.0_Hz_20.0.h5',
@@ -560,12 +569,25 @@ class TestSpeedAirStateAndConfig:
             'run_0006_alpha_0.0_beta_0.0_Hz_40.0.h5',
         ]
         grouped = group_files_by_configuration(files)
-        # exactly one detected configuration, and it HAS air-on files
+        assert sorted(grouped.keys()) == ['hz_20', 'hz_40']
+        for key in ('hz_20', 'hz_40'):
+            states = grouped[key]
+            assert len(states['AirOn']) == 2          # the two alphas at speed
+            assert len(states['AirOff']) == 2         # shared speed-0 tares
+            # air-on files all carry this step's speed token
+            assert all('_Hz_' in Path(i.filepath).name for i in states['AirOn'])
+
+    def test_single_speed_or_mach_directory_not_split(self):
+        # One distinct speed (or the legacy mach token) => one group, unchanged.
+        files = [
+            'run_0001_alpha_-2.0_beta_0.0_mach_0.00.h5',
+            'run_0002_alpha_-2.0_beta_0.0_mach_0.30.h5',
+            'run_0003_alpha_0.0_beta_0.0_mach_0.30.h5',
+        ]
+        grouped = group_files_by_configuration(files)
         assert list(grouped.keys()) == ['Unknown']
-        states = grouped['Unknown']
-        assert len(states['AirOn']) == 4
-        assert len(states['AirOff']) == 2
-        assert len(states['Unknown']) == 0
+        assert len(grouped['Unknown']['AirOn']) == 2
+        assert len(grouped['Unknown']['AirOff']) == 1
 
 
 def _external_raw_dict_speed(value, unit='hz', setpoints=None, n=N_FAST):
@@ -623,6 +645,103 @@ class TestSpeedReductionMetadata:
         ss = reduce_steady_state(reduced)
         np.testing.assert_allclose(ss.speed_setpoints,
                                    [0.0, 10.0, 20.0, 30.0])
+
+
+class TestInstrumentBasedTunnelCal:
+    """Instrument-based tunnel calibration: freestream injects per-channel
+    cal (cal_slope/offset/unit/type); Streamlined applies it instead of a
+    .pcf, passes already-engineering (Heise, identity) channels through
+    untouched, and falls back to the built-in DaqBook default when a file
+    carries no injected cal. Guards the 'Heise shifted by 10' bug."""
+
+    def test_temp_identity_heise_degF_not_scaled_by_10(self):
+        # The bug: a correct 70 degF Heise reading became 700 (raw*10).
+        cal = {'Temp': {'slope': 1.0, 'offset': 0.0, 'unit': 'degF',
+                        'type': 'identity'}}
+        out = _temperature_channel_to_celsius(np.array([70.0]), cal, 'auto')
+        # 70 degF -> 21.11 degC, NOT (70*10 -> 700 degF)
+        assert out[0] == pytest.approx((70.0 - 32.0) * 5.0 / 9.0, abs=1e-6)
+
+    def test_temp_identity_degC_passthrough(self):
+        cal = {'Temp': {'slope': 1.0, 'offset': 0.0, 'unit': 'degC',
+                        'type': 'identity'}}
+        out = _temperature_channel_to_celsius(np.array([20.0]), cal, 'auto')
+        assert out[0] == pytest.approx(20.0)
+
+    def test_temp_linear_daqbook_slope10(self):
+        # DaqBook: 0.1 V/degC -> raw 2.0 V is 20 degC
+        cal = {'Temp': {'slope': 10.0, 'offset': 0.0, 'unit': 'degC',
+                        'type': 'linear'}}
+        out = _temperature_channel_to_celsius(np.array([2.0]), cal, 'auto')
+        assert out[0] == pytest.approx(20.0)
+
+    def test_temp_no_cal_falls_back_to_builtin_x10(self):
+        # Legacy DaqBook default path (raw*10, forced degC)
+        out = _temperature_channel_to_celsius(np.array([2.0]), None, 'degC')
+        assert out[0] == pytest.approx(20.0)
+
+    def test_pressure_identity_heise_passthrough(self):
+        cal = {'Ptot': {'slope': 1.0, 'offset': 0.0, 'unit': 'psia',
+                        'type': 'identity'}}
+        out = _pressure_channel_to_psi(np.array([14.7]), 'Ptot', cal, None, 'P690')
+        assert out[0] == pytest.approx(14.7)          # already psi, no gain
+
+    def test_pressure_linear_applies_slope(self):
+        cal = {'Ptot': {'slope': 1.92604, 'offset': 0.0, 'unit': 'psia',
+                        'type': 'linear'}}
+        out = _pressure_channel_to_psi(np.array([1.0]), 'Ptot', cal, None, 'P690')
+        assert out[0] == pytest.approx(1.92604)
+
+    def test_pressure_builtin_default_when_no_cal(self):
+        # No injected cal, no .pcf -> built-in DaqBook default slope
+        out = _pressure_channel_to_psi(np.array([1.0]), 'Ptot', None, None, 'P690')
+        assert out[0] == pytest.approx(1.92604)
+        out = _pressure_channel_to_psi(np.array([1.0]), 'Pdiff', None, None, 'P220')
+        assert out[0] == pytest.approx(0.386949)
+
+    def test_pressure_legacy_pcf_still_honored(self):
+        pcf = {'P690': SimpleNamespace(slope=5.0)}
+        out = _pressure_channel_to_psi(np.array([1.0]), 'Ptot', None, pcf, 'P690')
+        assert out[0] == pytest.approx(5.0)
+
+    def test_lswt_identity_pressure_gives_true_q(self):
+        # LSWT q = Pdiff; a Heise-in-psi identity channel must pass straight
+        # through (0.25 psi -> q 0.25 psi), not be multiplied by a slope.
+        raw = {'Pdiff': np.full(4, 0.25),
+               'channel_cal': {'Pdiff': {'slope': 1.0, 'offset': 0.0,
+                                         'unit': 'psid', 'type': 'identity'}}}
+        cond = calc_tunnel_conditions(raw, {}, facility='LSWT')
+        np.testing.assert_allclose(cond.Q, 0.25)
+
+    def test_lswt_no_cal_uses_builtin_default(self):
+        raw = {'Pdiff': np.full(4, 1.0)}
+        cond = calc_tunnel_conditions(raw, {}, facility='LSWT')
+        np.testing.assert_allclose(cond.Q, 0.386949)
+
+    def _lswt_cond_at_q(self, q_psi):
+        # Heise-style identity Ptot/Temp + identity q -> low-speed Mach
+        ident = lambda u: {'slope': 1.0, 'offset': 0.0, 'unit': u,
+                           'type': 'identity'}
+        raw = {
+            'Pdiff': np.full(8, q_psi),
+            'Ptot': np.full(8, 14.696),      # psia, ~1 atm
+            'Temp': np.full(8, 20.0),        # degC
+            'channel_cal': {'Pdiff': ident('psid'), 'Ptot': ident('psia'),
+                            'Temp': ident('degC')},
+        }
+        return calc_tunnel_conditions(raw, {}, facility='LSWT')
+
+    def test_lswt_computes_distinct_low_speed_mach(self):
+        c_lo = self._lswt_cond_at_q(0.03)
+        c_hi = self._lswt_cond_at_q(0.10)
+        m_lo = float(np.mean(c_lo.Mach))
+        m_hi = float(np.mean(c_hi.Mach))
+        # Distinct, ordered, and in the low-speed band (0..~0.15)
+        assert 0.0 < m_lo < m_hi < 0.15
+        assert m_hi - m_lo > 0.01
+        # velocity and Re also populated
+        assert float(np.mean(c_hi.U_inf)) > float(np.mean(c_lo.U_inf)) > 0
+        assert float(np.mean(c_hi.Re)) > 0
 
 
 # ---------------------------------------------------------------------------

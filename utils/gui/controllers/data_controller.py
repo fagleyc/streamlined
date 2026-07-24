@@ -368,9 +368,14 @@ class ProcessingWorker(QRunnable):
                 directory = self.directories[0] if self.directories else ""
             data_dir = str(air_on_files[0].filepath.parent) if air_on_files else directory
 
-            # Sort AirOn files by (alpha, beta) for consistent ordering
-            on_sorted = sorted(air_on_files, key=lambda f: (f.alpha, f.beta))
-            off_sorted = sorted(air_off_files, key=lambda f: (f.alpha, f.beta))
+            # Sort AirOn files by (alpha, beta, speed) — alpha first, beta
+            # second, tunnel-speed setpoint third (Casey's requested order).
+            def _ab_speed(f):
+                return (f.alpha, f.beta,
+                        getattr(f, 'speed', None) if getattr(f, 'speed', None)
+                        is not None else 0.0)
+            on_sorted = sorted(air_on_files, key=_ab_speed)
+            off_sorted = sorted(air_off_files, key=_ab_speed)
 
             for i, on_info in enumerate(on_sorted):
                 raw_entry = {'AirOn': {}, 'AirOff': {}}
@@ -891,13 +896,11 @@ class DataController(QObject):
                 "Use File > Load Balance Calibration or the 'Browse' button in the Calibration panel.")
             return
 
-        # Pressure calibration is required to compute tunnel conditions
-        if not self._pressure_cal and not self._pressure_cal_file:
-            self.error_occurred.emit(
-                "No Pressure Calibration",
-                "Load a pressure calibration (.PCF) file before processing data.\n\n"
-                "Use File > Load Pressure Calibration or the 'Browse' button in the Calibration panel.")
-            return
+        # Pressure calibration is NO LONGER required: freestream run files
+        # carry their own per-channel tunnel calibration (injected at record
+        # time), and legacy DaqBook files fall back to the built-in default
+        # cal. An external .pcf is still honored if one is loaded, but its
+        # absence is not an error.
 
         # Sanity check on geometry
         default_geo = self.model.get_geometry(self.model.default_geometry)
