@@ -860,9 +860,3 @@ class PlotPanel(QWidget):
 
         machs = self.model.cases.all_mach_numbers
         self.filter_toolbar.set_mach_values(machs)
-
-        reynolds = self.model.cases.all_reynolds_numbers
-        self.filter_toolbar.set_reynolds_values(reynolds)
-
-        velocities = self.model.cases.all_velocities
-        self.filter_toolbar.set_velocity_values(velocities)

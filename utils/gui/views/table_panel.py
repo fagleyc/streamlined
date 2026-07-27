@@ -12,7 +12,7 @@ from typing import Optional, List
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QTableWidgetItem,
     QPushButton, QLabel, QComboBox, QFrame, QHeaderView, QFileDialog,
-    QAbstractItemView, QMessageBox, QGroupBox, QGridLayout, QCheckBox
+    QAbstractItemView, QMessageBox, QGroupBox
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor
@@ -32,6 +32,10 @@ except ImportError:
     UNITS_AVAILABLE = False
 
 
+class ExportAborted(Exception):
+    """Raised when an export has nothing to write."""
+
+
 class NumericTableWidgetItem(QTableWidgetItem):
     """QTableWidgetItem that sorts numerically instead of lexicographically."""
 
@@ -41,189 +45,6 @@ class NumericTableWidgetItem(QTableWidgetItem):
                     < float(other.data(Qt.ItemDataRole.UserRole)))
         except (TypeError, ValueError):
             return super().__lt__(other)
-
-
-class TunnelConditionsPanel(QWidget):
-    """Panel displaying tunnel conditions for the selected case."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._output_units = "IPS"
-        self._setup_ui()
-
-    def _setup_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(8)
-
-        # Title
-        title = QLabel("Tunnel Conditions")
-        title.setStyleSheet(f"font-weight: bold; color: {DarkTheme.TEXT_PRIMARY};")
-        layout.addWidget(title)
-
-        # Conditions grid
-        self._grid = QGridLayout()
-        self._grid.setSpacing(8)
-
-        # Create labels for each condition (will be updated based on units)
-        self._condition_labels = {}
-        self._value_labels = {}
-
-        conditions = [
-            ("Q", "lbl_Q"),
-            ("U_inf", "lbl_velocity"),
-            ("Mach", "lbl_mach"),
-            ("Re", "lbl_reynolds"),
-            ("rho", "lbl_density"),
-            ("T", "lbl_temperature"),
-        ]
-
-        for i, (key, attr_name) in enumerate(conditions):
-            row = i // 2
-            col = (i % 2) * 2
-
-            label = QLabel(self._get_label_text(key))
-            label.setStyleSheet(f"color: {DarkTheme.TEXT_SECONDARY};")
-            self._grid.addWidget(label, row, col)
-            self._condition_labels[key] = label
-
-            value_label = QLabel("--")
-            value_label.setStyleSheet(f"""
-                color: {DarkTheme.TEXT_PRIMARY};
-                font-family: monospace;
-                font-weight: bold;
-            """)
-            setattr(self, attr_name, value_label)
-            self._value_labels[key] = value_label
-            self._grid.addWidget(value_label, row, col + 1)
-
-        layout.addLayout(self._grid)
-        layout.addStretch()
-
-    def _get_label_text(self, key: str) -> str:
-        """Get label text with appropriate unit based on output_units."""
-        if UNITS_AVAILABLE:
-            try:
-                labels = UNIT_LABELS[UnitSystem[self._output_units]]
-                if key == "Q":
-                    return f"Q ({labels.pressure}):"
-                elif key == "U_inf":
-                    return f"U_inf ({labels.velocity}):"
-                elif key == "rho":
-                    return f"rho ({labels.density}):"
-                elif key == "T":
-                    return f"T ({labels.temperature}):"
-            except (KeyError, AttributeError):
-                pass
-
-        # Fallback labels
-        fallback = {
-            "Q": "Q (psi):",
-            "U_inf": "U_inf (m/s):",
-            "Mach": "Mach:",
-            "Re": "Re:",
-            "rho": "rho (kg/m^3):",
-            "T": "T (degC):",
-        }
-        return fallback.get(key, f"{key}:")
-
-    def set_output_units(self, units: str):
-        """Update output units and refresh labels."""
-        self._output_units = units
-        self._update_labels()
-
-    def _update_labels(self):
-        """Update all condition labels with current units."""
-        for key, label in self._condition_labels.items():
-            label.setText(self._get_label_text(key))
-
-    def update_conditions(self, case: Optional[TestCase]):
-        """Update displayed conditions from a test case."""
-        if case is None or not case.has_data:
-            self.lbl_Q.setText("--")
-            self.lbl_velocity.setText("--")
-            self.lbl_mach.setText("--")
-            self.lbl_reynolds.setText("--")
-            self.lbl_density.setText("--")
-            self.lbl_temperature.setText("--")
-            return
-
-        # Get converter if available
-        converter = None
-        if UNITS_AVAILABLE:
-            try:
-                converter = UnitConverter(UnitSystem[self._output_units])
-            except (KeyError, AttributeError):
-                pass
-
-        # Get mean values and convert if needed
-        # Dynamic pressure (stored in psi)
-        Q_raw = None
-        if case.pressure is not None:
-            Q_raw = case.pressure
-        elif len(case.dynamic_pressures) > 0:
-            Q_raw = float(np.mean(case.dynamic_pressures))
-
-        if Q_raw is not None:
-            Q_display = converter.convert_pressure(Q_raw) if converter else Q_raw
-            self.lbl_Q.setText(f"{Q_display:.4f}")
-        else:
-            self.lbl_Q.setText("--")
-
-        # Velocity (stored in m/s)
-        V_raw = None
-        if case.velocity is not None:
-            V_raw = case.velocity
-        elif len(case.velocities) > 0:
-            V_raw = float(np.mean(case.velocities))
-
-        if V_raw is not None:
-            V_display = converter.convert_velocity(V_raw) if converter else V_raw
-            self.lbl_velocity.setText(f"{V_display:.2f}")
-        else:
-            self.lbl_velocity.setText("--")
-
-        # Mach (dimensionless - no conversion)
-        if case.mach_number is not None:
-            self.lbl_mach.setText(f"{case.mach_number:.4f}")
-        elif len(case.machs) > 0:
-            self.lbl_mach.setText(f"{np.mean(case.machs):.4f}")
-        else:
-            self.lbl_mach.setText("--")
-
-        # Reynolds number (dimensionless - no conversion)
-        if case.reynolds_number is not None:
-            self.lbl_reynolds.setText(f"{case.reynolds_number:.2e}")
-        elif len(case.reynolds) > 0:
-            self.lbl_reynolds.setText(f"{np.mean(case.reynolds):.2e}")
-        else:
-            self.lbl_reynolds.setText("--")
-
-        # Density (stored in kg/m^3)
-        rho_raw = None
-        if case.density is not None:
-            rho_raw = case.density
-        elif len(case.densities) > 0:
-            rho_raw = float(np.mean(case.densities))
-
-        if rho_raw is not None:
-            rho_display = converter.convert_density(rho_raw) if converter else rho_raw
-            self.lbl_density.setText(f"{rho_display:.6f}")
-        else:
-            self.lbl_density.setText("--")
-
-        # Temperature (stored in Celsius)
-        T_raw = None
-        if case.temperature is not None:
-            T_raw = case.temperature
-        elif len(case.temperatures) > 0:
-            T_raw = float(np.mean(case.temperatures))
-
-        if T_raw is not None:
-            T_display = converter.convert_temperature(T_raw) if converter else T_raw
-            self.lbl_temperature.setText(f"{T_display:.1f}")
-        else:
-            self.lbl_temperature.setText("--")
 
 
 class TablePanel(QWidget):
@@ -265,28 +86,13 @@ class TablePanel(QWidget):
 
         toolbar_layout.addStretch()
 
-        # Include tunnel conditions checkbox
-        self.chk_tunnel_conditions = QCheckBox("Include Tunnel Conditions")
-        self.chk_tunnel_conditions.setChecked(True)
-        self.chk_tunnel_conditions.stateChanged.connect(self._update_table)
-        toolbar_layout.addWidget(self.chk_tunnel_conditions)
-
-        # (Export buttons removed - use File > Export... instead.)
-
-        toolbar_layout.addSpacing(16)
-
-        # Include unsteady (time-series) data option for HDF5/MAT exports
-        self.chk_include_unsteady = QCheckBox("Include Unsteady")
-        self.chk_include_unsteady.setChecked(False)
-        self.chk_include_unsteady.setToolTip(
-            "Include full time-series data in HDF5/MAT exports\n"
-            "(in addition to averaged values)"
-        )
-        toolbar_layout.addWidget(self.chk_include_unsteady)
+        # (Export buttons and the tunnel-conditions / unsteady checkboxes
+        # removed - tunnel columns are always shown and the unsteady
+        # option lives in File > Export...)
 
         layout.addWidget(toolbar)
 
-        # Content area with table and conditions panel
+        # Content area with the table filling the full width
         content = QWidget()
         content_layout = QHBoxLayout(content)
         content_layout.setContentsMargins(0, 0, 0, 0)
@@ -327,17 +133,6 @@ class TablePanel(QWidget):
         """)
 
         content_layout.addWidget(self.table, stretch=1)
-
-        # Tunnel conditions panel (sidebar)
-        self.conditions_panel = TunnelConditionsPanel()
-        self.conditions_panel.setFixedWidth(200)
-        self.conditions_panel.setStyleSheet(f"""
-            QWidget {{
-                background-color: {DarkTheme.BACKGROUND_LIGHTER};
-                border-left: 1px solid {DarkTheme.BORDER};
-            }}
-        """)
-        content_layout.addWidget(self.conditions_panel)
 
         layout.addWidget(content)
 
@@ -449,10 +244,9 @@ class TablePanel(QWidget):
                     seen_custom.add(name)
                     custom_columns.append((f'custom:{name}', name))
 
-        # Build column list based on checkbox
-        self._columns = base_columns + force_columns + moment_columns + element_columns
-        if self.chk_tunnel_conditions.isChecked():
-            self._columns = self._columns + tunnel_columns
+        # Build column list.  Tunnel conditions are always included.
+        self._columns = (base_columns + force_columns + moment_columns
+                         + element_columns + tunnel_columns)
         # Append custom columns last so they don't shift built-ins
         self._columns = self._columns + custom_columns
 
@@ -467,7 +261,6 @@ class TablePanel(QWidget):
     def set_output_units(self, units: str):
         """Set output units and refresh the display."""
         self._output_units = units
-        self.conditions_panel.set_output_units(units)
         self._update_table()
 
     def _connect_signals(self):
@@ -503,18 +296,11 @@ class TablePanel(QWidget):
             for case in self.model.cases:
                 if case.has_data:
                     rows.extend(self._get_case_rows(case))
-            # Update conditions panel with first case
-            if len(self.model.cases) > 0:
-                first_case = next(iter(self.model.cases), None)
-                self.conditions_panel.update_conditions(first_case)
-            else:
-                self.conditions_panel.update_conditions(None)
         else:
             # Show single case
             case = self.model.cases.get(case_id)
             if case and case.has_data:
                 rows = self._get_case_rows(case)
-            self.conditions_panel.update_conditions(case)
 
         # Disable sorting while populating to prevent Qt from re-sorting
         # as items are inserted (which scrambles our lexsort order)
@@ -557,6 +343,77 @@ class TablePanel(QWidget):
 
         self._update_status(len(rows))
 
+    @staticmethod
+    def _speed_sort_key(case: TestCase, n: int) -> np.ndarray:
+        """Build the tunnel-speed grouping key used to order rows.
+
+        Per-point Mach (rounded to 3 dp) is preferred.  A low-speed
+        tunnel driven by a fan-Hz sweep can report Mach as missing,
+        misaligned or all-zero, so fall back to velocity (rounded to
+        1 dp) whenever Mach resolves fewer than two speed steps and
+        velocity resolves more.  If neither varies the key is all
+        zeros and the order degrades gracefully to (beta, alpha).
+        """
+        def _flat(name):
+            arr = getattr(case, name, None)
+            if arr is None:
+                return np.array([])
+            return np.asarray(arr, dtype=float).flatten()
+
+        machs = _flat('machs')
+        vels = _flat('velocities')
+        mach_key = np.round(machs, 3) if machs.size == n else None
+        vel_key = np.round(vels, 1) if vels.size == n else None
+
+        if mach_key is None:
+            return vel_key if vel_key is not None else np.zeros(n)
+        if (vel_key is not None
+                and np.unique(mach_key).size < 2
+                and np.unique(vel_key).size > np.unique(mach_key).size):
+            return vel_key
+        return mach_key
+
+    @staticmethod
+    def _sweep_dir_rank(case: TestCase, n: int) -> np.ndarray:
+        """Build the hysteresis-leg key used to order rows.
+
+        Freestream tags the return leg of a sweep with sweep_dir 'dn';
+        the outbound leg carries '' or 'up'.  Outbound ranks 0 and
+        return ranks 1, so a tagged up/down pair — which shares every
+        (speed, beta, alpha) triple — comes out as two contiguous
+        blocks instead of interleaving.  Cases with no leg tags (or a
+        misaligned tag array) get an all-zero rank, which leaves the
+        order at plain speed -> beta -> alpha.
+        """
+        dirs = getattr(case, 'sweep_dirs', None)
+        if dirs is None:
+            return np.zeros(n)
+        arr = np.asarray(dirs).flatten()
+        if arr.size != n:
+            return np.zeros(n)
+        return np.array([1.0 if str(d).strip().lower() == 'dn' else 0.0
+                         for d in arr])
+
+    @staticmethod
+    def _run_number_key(case: TestCase, n: int) -> np.ndarray:
+        """Build the acquisition-order key used to break remaining ties.
+
+        Per-point run numbers are optional, so fall back to the case's
+        existing point order whenever they are missing, misaligned or
+        non-numeric.  Either way a fully degenerate key set resolves
+        deterministically rather than by a stable-sort artifact.
+        """
+        runs = getattr(case, 'run_numbers', None)
+        if runs is None:
+            return np.arange(n, dtype=float)
+        try:
+            arr = np.asarray(runs, dtype=float).flatten()
+        except (TypeError, ValueError):
+            return np.arange(n, dtype=float)
+        if arr.size != n:
+            return np.arange(n, dtype=float)
+        return arr
+
     def _get_case_rows(self, case: TestCase) -> List[List]:
         """Extract rows from a test case with unit conversions applied."""
         rows = []
@@ -572,10 +429,24 @@ class TablePanel(QWidget):
         alphas = case.alphas.flatten()
         betas = case.betas.flatten()
 
-        # Sort by beta first, then alpha within each beta group.
-        # Round betas to nearest integer for grouping (handles measurement
-        # noise — values within ~0.5° are treated as the same beta).
-        sort_order = np.lexsort((alphas, np.round(betas)))
+        # Sort rows by tunnel speed (primary), then beta, then the
+        # hysteresis leg, then alpha, with the acquisition run number as
+        # the final tiebreaker — the order the tunnel is actually run:
+        # every alpha for a beta at one speed, then the next beta, then
+        # the next speed. A tagged return sweep is held out as its own
+        # block after the outbound leg (alpha still ascends inside each
+        # leg — the leg tag says which way it was flown), and any key
+        # still degenerate after that falls back to acquisition order.
+        # np.lexsort takes the LAST key as primary, so keys are ordered
+        # (run, alpha, dir, beta, speed). Values are rounded for
+        # grouping so measurement noise doesn't scramble the order.
+        alpha_key = np.round(alphas, 1)
+        beta_key = np.round(betas, 1)
+        speed_key = self._speed_sort_key(case, alphas.size)
+        dir_rank = self._sweep_dir_rank(case, alphas.size)
+        run_key = self._run_number_key(case, alphas.size)
+        sort_order = np.lexsort((run_key, alpha_key, dir_rank,
+                                 beta_key, speed_key))
         alphas = alphas[sort_order]
         betas = betas[sort_order]
 
@@ -625,8 +496,6 @@ class TablePanel(QWidget):
                 custom_sorted[name] = _sort(arr)
             except Exception:
                 custom_sorted[name] = None
-
-        include_tunnel = self.chk_tunnel_conditions.isChecked()
 
         for i in range(len(alphas)):
             ld = Cl[i] / Cd[i] if Cd[i] != 0 else float('inf')
@@ -681,43 +550,42 @@ class TablePanel(QWidget):
 
             row.extend([n1_val, n2_val, y1_val, y2_val, ax_val, rl_val])
 
-            # Tunnel condition columns
-            if include_tunnel:
-                # Q (convert from psi)
-                q_val = Q[i] if Q is not None and i < len(Q) else 0.0
-                if converter:
-                    q_val = converter.convert_pressure(q_val)
-                row.append(q_val)
+            # Tunnel condition columns (always present)
+            # Q (convert from psi)
+            q_val = Q[i] if Q is not None and i < len(Q) else 0.0
+            if converter:
+                q_val = converter.convert_pressure(q_val)
+            row.append(q_val)
 
-                # Mach (dimensionless - no conversion)
-                row.append(Mach[i] if Mach is not None and i < len(Mach) else 0.0)
+            # Mach (dimensionless - no conversion)
+            row.append(Mach[i] if Mach is not None and i < len(Mach) else 0.0)
 
-                # Re (dimensionless - no conversion)
-                row.append(Re[i] if Re is not None and i < len(Re) else 0.0)
+            # Re (dimensionless - no conversion)
+            row.append(Re[i] if Re is not None and i < len(Re) else 0.0)
 
-                # U_inf (convert from m/s)
-                u_val = U_inf[i] if U_inf is not None and i < len(U_inf) else 0.0
-                if converter:
-                    u_val = converter.convert_velocity(u_val)
-                row.append(u_val)
+            # U_inf (convert from m/s)
+            u_val = U_inf[i] if U_inf is not None and i < len(U_inf) else 0.0
+            if converter:
+                u_val = converter.convert_velocity(u_val)
+            row.append(u_val)
 
-                # rho (convert from kg/m^3)
-                rho_val = rho[i] if rho is not None and i < len(rho) else 0.0
-                if converter:
-                    rho_val = converter.convert_density(rho_val)
-                row.append(rho_val)
+            # rho (convert from kg/m^3)
+            rho_val = rho[i] if rho is not None and i < len(rho) else 0.0
+            if converter:
+                rho_val = converter.convert_density(rho_val)
+            row.append(rho_val)
 
-                # T (convert from Celsius)
-                t_val = T[i] if T is not None and i < len(T) else 0.0
-                if converter:
-                    t_val = converter.convert_temperature(t_val)
-                row.append(t_val)
+            # T (convert from Celsius)
+            t_val = T[i] if T is not None and i < len(T) else 0.0
+            if converter:
+                t_val = converter.convert_temperature(t_val)
+            row.append(t_val)
 
-                # P_tot (convert from psi)
-                ptot_val = Ptot[i] if Ptot is not None and i < len(Ptot) else 0.0
-                if converter:
-                    ptot_val = converter.convert_pressure(ptot_val)
-                row.append(ptot_val)
+            # P_tot (convert from psi)
+            ptot_val = Ptot[i] if Ptot is not None and i < len(Ptot) else 0.0
+            if converter:
+                ptot_val = converter.convert_pressure(ptot_val)
+            row.append(ptot_val)
 
             # Custom calculator columns (no unit conversion - they are
             # user-defined and the user expression dictates the units)
@@ -1476,7 +1344,7 @@ class TablePanel(QWidget):
         fmt = config.get('format', 'csv')
         if not filepath:
             return
-        self._do_export(filepath, fmt)
+        self._do_export(filepath, fmt, config)
 
     def _export_coe(self, output_dir: str):
         """Export reduced cases to legacy Reduce2 .COE files.
@@ -1564,351 +1432,374 @@ class TablePanel(QWidget):
         QMessageBox.information(
             self, "COE Export Complete", '\n'.join(msg_lines))
 
-    def _do_export(self, filepath: str, format: str):
-        """Perform the export."""
+    @staticmethod
+    def _config_wants_unsteady(config: Optional[dict]) -> bool:
+        """Whether an ExportDialog config asks for time-series data.
+
+        The dialog exposes the coefficient and tunnel time-series as
+        separate options; either one requires the unsteady sub-group.
+        Defaults to False when no config was supplied.
+        """
+        if not config:
+            return False
+        return bool(config.get('include_coefficients_ts')
+                    or config.get('include_tunnel_ts'))
+
+    def _do_export(self, filepath: str, format: str, config: dict = None):
+        """Perform the export and report the outcome to the user."""
+        if format == 'coe':
+            # The COE writer reports its own results
+            self._export_coe(filepath)
+            return
+
         try:
-            import pandas as pd
-
-            if format == 'coe':
-                self._export_coe(filepath)
-                return
-
-            if format == 'excel':
-                # Export each case to its own sheet
-                case_id = self.cmb_case.currentData()
-                cases_to_export = []
-
-                if case_id is None:
-                    # All cases
-                    for case in self.model.cases:
-                        if case.has_data:
-                            cases_to_export.append(case)
-                else:
-                    case = self.model.cases.get(case_id)
-                    if case and case.has_data:
-                        cases_to_export.append(case)
-
-                if not cases_to_export:
-                    QMessageBox.warning(self, "Export Error", "No data to export.")
-                    return
-
-                col_headers = [col[1] for col in self._columns]
-                with pd.ExcelWriter(filepath, engine='openpyxl') as writer:
-                    used_names = set()
-                    n_cases = len(cases_to_export)
-                    key_width = max(2, len(str(n_cases)))
-                    for case_i, case in enumerate(cases_to_export, start=1):
-                        rows = self._get_case_rows(case)
-                        df = pd.DataFrame(rows, columns=col_headers)
-
-                        # Readable sheet name when possible, else a
-                        # generic Case_NN.  The full configuration name
-                        # always appears in cell A1 ("Case Name" header)
-                        # so nothing is lost regardless of the tab label.
-                        base = self._sanitize_sheet_name(case.name)
-                        if not base:
-                            base = f"Case_{case_i:0{key_width}d}"
-                        sheet_name = base
-                        dup = 1
-                        while sheet_name.lower() in used_names:
-                            suffix = f"_{dup}"
-                            sheet_name = base[:31 - len(suffix)] + suffix
-                            dup += 1
-                        used_names.add(sheet_name.lower())
-
-                        # Write header summary then data below it
-                        header_rows = self._build_case_header(case)
-                        startrow = len(header_rows) + 1  # +1 blank row
-                        df.to_excel(writer, sheet_name=sheet_name,
-                                    index=False, startrow=startrow)
-
-                        # Write header info into the sheet
-                        ws = writer.sheets[sheet_name]
-                        for r, (key, val) in enumerate(header_rows, start=1):
-                            ws.cell(row=r, column=1, value=key)
-                            ws.cell(row=r, column=2, value=val)
-            elif format == 'mat':
-                import scipy.io
-
-                # Export each case as a named MATLAB struct
-                case_id = self.cmb_case.currentData()
-                cases_to_export = []
-                if case_id is None:
-                    for case in self.model.cases:
-                        if case.has_data:
-                            cases_to_export.append(case)
-                else:
-                    case = self.model.cases.get(case_id)
-                    if case and case.has_data:
-                        cases_to_export.append(case)
-
-                if not cases_to_export:
-                    QMessageBox.warning(self, "Export Error",
-                                        "No data to export.")
-                    return
-
-                col_headers = [col[1] for col in self._columns]
-                mat_dict = {}
-
-                # Top-level variable names use a generic, always-valid
-                # convention (case_001, case_002, ...) so long or
-                # hyphenated configuration names never break MATLAB's
-                # 63-char identifier limit.  The real configuration name
-                # is preserved inside each struct (.name) and in a
-                # top-level 'case_index' manifest, so no data is lost.
-                n_cases = len(cases_to_export)
-                key_width = max(3, len(str(n_cases)))
-                idx_keys = []
-                idx_names = []
-                idx_runs = []
-
-                for case_i, case in enumerate(cases_to_export, start=1):
-                    # Categorized struct: case.Tunnel_Conditions.Q,
-                    # case.BRF_Forces.Fx, case.Pressure_Ports.p0, etc.,
-                    # plus case.Raw.<every raw channel>.
-                    case_struct = self._build_categorized_struct(case)
-
-                    # Metadata sub-struct (calibration, geometry, etc.)
-                    case_struct['meta'] = self._build_case_meta(case)
-
-                    # Name pointer fields so the generic key can be
-                    # mapped back to the real configuration name.
-                    case_key = f"case_{case_i:0{key_width}d}"
-                    case_struct['name'] = str(case.name)
-                    case_struct['key'] = case_key
-                    case_struct['run_number'] = np.float64(
-                        case.run_number if case.run_number else 0)
-
-                    # Custom calculator outputs: per-point mean + std
-                    custom_means = getattr(case, 'custom_vars', None) or {}
-                    custom_stds = getattr(case, 'custom_vars_std', None) or {}
-                    if custom_means:
-                        case_struct['Custom'] = {
-                            self._sanitize_matlab_name(name): np.asarray(arr)
-                            for name, arr in custom_means.items()
-                        }
-                    if custom_stds:
-                        case_struct['Custom_std'] = {
-                            self._sanitize_matlab_name(name): np.asarray(arr)
-                            for name, arr in custom_stds.items()
-                        }
-
-                    # Add unsteady (time-series) data if requested
-                    if self.chk_include_unsteady.isChecked():
-                        daq = getattr(case, 'daq', None)
-                        red = (getattr(daq, 'red', None)
-                               if daq is not None else None)
-                        if red:
-                            unsteady = {}
-                            for pt_idx, pt in enumerate(red):
-                                pt_data = (
-                                    self._extract_unsteady_point(pt))
-                                if pt_data:
-                                    pt_struct = {}
-                                    for ch_name, arr in pt_data.items():
-                                        safe_ch = (
-                                            self._sanitize_matlab_name(
-                                                ch_name))
-                                        pt_struct[safe_ch] = arr
-                                    # Store mean alpha/beta
-                                    if 'alpha' in pt_data:
-                                        pt_struct['mean_alpha'] = (
-                                            np.float64(np.mean(
-                                                pt_data['alpha'])))
-                                    if 'beta' in pt_data:
-                                        pt_struct['mean_beta'] = (
-                                            np.float64(np.mean(
-                                                pt_data['beta'])))
-                                    unsteady[f'point_{pt_idx}'] = (
-                                        pt_struct)
-                            if unsteady:
-                                case_struct['unsteady'] = unsteady
-
-                    mat_dict[case_key] = case_struct
-                    idx_keys.append(case_key)
-                    idx_names.append(str(case.name))
-                    idx_runs.append(
-                        float(case.run_number) if case.run_number else 0.0)
-
-                # Top-level manifest mapping generic keys -> real names.
-                # In MATLAB:  case_index.names{2} gives case_002's name.
-                mat_dict['case_index'] = {
-                    'keys': np.array(idx_keys, dtype=object),
-                    'names': np.array(idx_names, dtype=object),
-                    'run_numbers': np.array(idx_runs, dtype=float),
-                    'count': np.float64(n_cases),
-                }
-
-                scipy.io.savemat(filepath, mat_dict, long_field_names=False)
-
-            elif format == 'csv':
-                # CSV - collect from the table widget
-                data = {col[1]: [] for col in self._columns}
-
-                for row in range(self.table.rowCount()):
-                    for col, col_info in enumerate(self._columns):
-                        item = self.table.item(row, col)
-                        try:
-                            value = float(item.text())
-                        except ValueError:
-                            value = item.text()
-                        data[col_info[1]].append(value)
-
-                df = pd.DataFrame(data)
-                df.to_csv(filepath, index=False)
-
-            elif format == 'hdf5':
-                import h5py
-
-                # Build per-case structure with averaged data,
-                # optional unsteady data, and metadata
-                case_id = self.cmb_case.currentData()
-                cases_to_export = []
-                if case_id is None:
-                    for case in self.model.cases:
-                        if case.has_data:
-                            cases_to_export.append(case)
-                else:
-                    case = self.model.cases.get(case_id)
-                    if case and case.has_data:
-                        cases_to_export.append(case)
-
-                if not cases_to_export:
-                    QMessageBox.warning(self, "Export Error",
-                                        "No data to export.")
-                    return
-
-                include_unsteady = self.chk_include_unsteady.isChecked()
-                col_headers = [col[1] for col in self._columns]
-                used_names = {}
-
-                with h5py.File(filepath, 'w') as hf:
-                    # Global metadata
-                    hf.attrs['streamlined_version'] = __version__
-                    hf.attrs['output_units'] = self.model.output_units
-                    hf.attrs['n_cases'] = len(cases_to_export)
-
-                    # Global calibration group
-                    cal_grp = hf.create_group('calibration')
-                    cal_meta = self._build_calibration_meta_dict()
-                    for k, v in cal_meta.items():
-                        cal_grp.attrs[k] = v
-
-                    # Global geometry group
-                    geo_grp = hf.create_group('geometry')
-                    geo_grp.attrs['mac'] = self.model.mac
-                    geo_grp.attrs['ref_area'] = self.model.ref_area
-                    geo_grp.attrs['span'] = self.model.span
-                    geo_grp.create_dataset('mrc',
-                                           data=np.array(self.model.mrc))
-                    geo_grp.attrs['input_units'] = self.model.units
-                    geo_grp.attrs['output_units'] = self.model.output_units
-
-                    for case in cases_to_export:
-                        # Sanitize case name for HDF5 group
-                        safe_name = case.name.replace('/', '_')
-
-                        # Deduplicate
-                        if safe_name in used_names:
-                            used_names[safe_name] += 1
-                            safe_name = (f"{safe_name}"
-                                         f"_{used_names[safe_name]}")
-                        else:
-                            used_names[safe_name] = 0
-
-                        case_grp = hf.create_group(safe_name)
-
-                        # Case metadata as attributes
-                        case_grp.attrs['name'] = case.name
-                        case_grp.attrs['run_number'] = (
-                            case.run_number if case.run_number else 0)
-                        if case.date:
-                            case_grp.attrs['date'] = (
-                                case.date.strftime('%Y-%m-%d %H:%M:%S'))
-                        if case.mach_number is not None:
-                            case_grp.attrs['Mach'] = case.mach_number
-                        if case.reynolds_number is not None:
-                            case_grp.attrs['Reynolds'] = (
-                                case.reynolds_number)
-
-                        # Categorized data: per-point means grouped
-                        # by Tunnel_Conditions / BRF_Forces / etc.,
-                        # plus a Raw group containing every raw DAQ
-                        # channel's per-point mean.
-                        categorized = self._build_categorized_struct(
-                            case)
-                        for cat_key, sub in categorized.items():
-                            sub_grp = case_grp.create_group(cat_key)
-                            for name, arr in sub.items():
-                                try:
-                                    sub_grp.create_dataset(
-                                        name, data=np.asarray(arr))
-                                except Exception:
-                                    pass
-
-                        # Custom calculator outputs: means and stds
-                        custom_means = getattr(
-                            case, 'custom_vars', None) or {}
-                        custom_stds = getattr(
-                            case, 'custom_vars_std', None) or {}
-                        if custom_means:
-                            cust_grp = case_grp.create_group('Custom')
-                            for name, arr in custom_means.items():
-                                try:
-                                    cust_grp.create_dataset(
-                                        name, data=np.asarray(arr))
-                                except Exception:
-                                    pass
-                        if custom_stds:
-                            cust_std_grp = case_grp.create_group(
-                                'Custom_std')
-                            for name, arr in custom_stds.items():
-                                try:
-                                    cust_std_grp.create_dataset(
-                                        name, data=np.asarray(arr))
-                                except Exception:
-                                    pass
-
-                        # Unsteady (time-series) data sub-group
-                        if include_unsteady:
-                            daq = getattr(case, 'daq', None)
-                            red = (getattr(daq, 'red', None)
-                                   if daq is not None else None)
-                            if red:
-                                unst_grp = case_grp.create_group(
-                                    'unsteady')
-                                for pt_idx, pt in enumerate(red):
-                                    pt_data = (
-                                        self._extract_unsteady_point(pt))
-                                    if pt_data:
-                                        pt_grp = unst_grp.create_group(
-                                            f'point_{pt_idx}')
-                                        # Store mean alpha/beta as attrs
-                                        if 'alpha' in pt_data:
-                                            pt_grp.attrs['mean_alpha'] = (
-                                                float(np.mean(
-                                                    pt_data['alpha'])))
-                                        if 'beta' in pt_data:
-                                            pt_grp.attrs['mean_beta'] = (
-                                                float(np.mean(
-                                                    pt_data['beta'])))
-                                        for ch_name, arr in (
-                                                pt_data.items()):
-                                            pt_grp.create_dataset(
-                                                ch_name, data=arr)
-
-            QMessageBox.information(
-                self, "Export Complete",
-                f"Data exported successfully to:\n{filepath}"
-            )
-
+            self._write_export(filepath, format, config)
+        except ExportAborted as e:
+            QMessageBox.warning(self, "Export Error", str(e))
+            return
         except ImportError:
             QMessageBox.warning(
                 self, "Export Error",
                 "pandas is required for export. Install with: pip install pandas"
             )
+            return
         except Exception as e:
             QMessageBox.critical(
                 self, "Export Error",
                 f"Failed to export data:\n{str(e)}"
             )
+            return
+
+        QMessageBox.information(
+            self, "Export Complete",
+            f"Data exported successfully to:\n{filepath}"
+        )
+
+    def _write_export(self, filepath: str, format: str, config: dict = None):
+        """Write the export file for a format, without any dialogs.
+
+        Kept separate from _do_export so the writers can run headless
+        (tests, scripted exports) where a modal message box would block.
+        Raises ExportAborted when there is nothing to write; any other
+        writer error propagates to the caller.
+        """
+        import pandas as pd
+
+        if format == 'excel':
+            # Export each case to its own sheet
+            case_id = self.cmb_case.currentData()
+            cases_to_export = []
+
+            if case_id is None:
+                # All cases
+                for case in self.model.cases:
+                    if case.has_data:
+                        cases_to_export.append(case)
+            else:
+                case = self.model.cases.get(case_id)
+                if case and case.has_data:
+                    cases_to_export.append(case)
+
+            if not cases_to_export:
+                raise ExportAborted("No data to export.")
+
+            col_headers = [col[1] for col in self._columns]
+            with pd.ExcelWriter(filepath, engine='openpyxl') as writer:
+                used_names = set()
+                n_cases = len(cases_to_export)
+                key_width = max(2, len(str(n_cases)))
+                for case_i, case in enumerate(cases_to_export, start=1):
+                    rows = self._get_case_rows(case)
+                    df = pd.DataFrame(rows, columns=col_headers)
+
+                    # Readable sheet name when possible, else a
+                    # generic Case_NN.  The full configuration name
+                    # always appears in cell A1 ("Case Name" header)
+                    # so nothing is lost regardless of the tab label.
+                    base = self._sanitize_sheet_name(case.name)
+                    if not base:
+                        base = f"Case_{case_i:0{key_width}d}"
+                    sheet_name = base
+                    dup = 1
+                    while sheet_name.lower() in used_names:
+                        suffix = f"_{dup}"
+                        sheet_name = base[:31 - len(suffix)] + suffix
+                        dup += 1
+                    used_names.add(sheet_name.lower())
+
+                    # Write header summary then data below it
+                    header_rows = self._build_case_header(case)
+                    startrow = len(header_rows) + 1  # +1 blank row
+                    df.to_excel(writer, sheet_name=sheet_name,
+                                index=False, startrow=startrow)
+
+                    # Write header info into the sheet
+                    ws = writer.sheets[sheet_name]
+                    for r, (key, val) in enumerate(header_rows, start=1):
+                        ws.cell(row=r, column=1, value=key)
+                        ws.cell(row=r, column=2, value=val)
+        elif format == 'mat':
+            import scipy.io
+
+            # Export each case as a named MATLAB struct
+            case_id = self.cmb_case.currentData()
+            cases_to_export = []
+            if case_id is None:
+                for case in self.model.cases:
+                    if case.has_data:
+                        cases_to_export.append(case)
+            else:
+                case = self.model.cases.get(case_id)
+                if case and case.has_data:
+                    cases_to_export.append(case)
+
+            if not cases_to_export:
+                raise ExportAborted("No data to export.")
+
+            col_headers = [col[1] for col in self._columns]
+            mat_dict = {}
+
+            # Top-level variable names use a generic, always-valid
+            # convention (case_001, case_002, ...) so long or
+            # hyphenated configuration names never break MATLAB's
+            # 63-char identifier limit.  The real configuration name
+            # is preserved inside each struct (.name) and in a
+            # top-level 'case_index' manifest, so no data is lost.
+            n_cases = len(cases_to_export)
+            key_width = max(3, len(str(n_cases)))
+            idx_keys = []
+            idx_names = []
+            idx_runs = []
+
+            for case_i, case in enumerate(cases_to_export, start=1):
+                # Categorized struct: case.Tunnel_Conditions.Q,
+                # case.BRF_Forces.Fx, case.Pressure_Ports.p0, etc.,
+                # plus case.Raw.<every raw channel>.
+                case_struct = self._build_categorized_struct(case)
+
+                # Metadata sub-struct (calibration, geometry, etc.)
+                case_struct['meta'] = self._build_case_meta(case)
+
+                # Name pointer fields so the generic key can be
+                # mapped back to the real configuration name.
+                case_key = f"case_{case_i:0{key_width}d}"
+                case_struct['name'] = str(case.name)
+                case_struct['key'] = case_key
+                case_struct['run_number'] = np.float64(
+                    case.run_number if case.run_number else 0)
+
+                # Custom calculator outputs: per-point mean + std
+                custom_means = getattr(case, 'custom_vars', None) or {}
+                custom_stds = getattr(case, 'custom_vars_std', None) or {}
+                if custom_means:
+                    case_struct['Custom'] = {
+                        self._sanitize_matlab_name(name): np.asarray(arr)
+                        for name, arr in custom_means.items()
+                    }
+                if custom_stds:
+                    case_struct['Custom_std'] = {
+                        self._sanitize_matlab_name(name): np.asarray(arr)
+                        for name, arr in custom_stds.items()
+                    }
+
+                # Add unsteady (time-series) data if requested
+                if self._config_wants_unsteady(config):
+                    daq = getattr(case, 'daq', None)
+                    red = (getattr(daq, 'red', None)
+                           if daq is not None else None)
+                    if red:
+                        unsteady = {}
+                        for pt_idx, pt in enumerate(red):
+                            pt_data = (
+                                self._extract_unsteady_point(pt))
+                            if pt_data:
+                                pt_struct = {}
+                                for ch_name, arr in pt_data.items():
+                                    safe_ch = (
+                                        self._sanitize_matlab_name(
+                                            ch_name))
+                                    pt_struct[safe_ch] = arr
+                                # Store mean alpha/beta
+                                if 'alpha' in pt_data:
+                                    pt_struct['mean_alpha'] = (
+                                        np.float64(np.mean(
+                                            pt_data['alpha'])))
+                                if 'beta' in pt_data:
+                                    pt_struct['mean_beta'] = (
+                                        np.float64(np.mean(
+                                            pt_data['beta'])))
+                                unsteady[f'point_{pt_idx}'] = (
+                                    pt_struct)
+                        if unsteady:
+                            case_struct['unsteady'] = unsteady
+
+                mat_dict[case_key] = case_struct
+                idx_keys.append(case_key)
+                idx_names.append(str(case.name))
+                idx_runs.append(
+                    float(case.run_number) if case.run_number else 0.0)
+
+            # Top-level manifest mapping generic keys -> real names.
+            # In MATLAB:  case_index.names{2} gives case_002's name.
+            mat_dict['case_index'] = {
+                'keys': np.array(idx_keys, dtype=object),
+                'names': np.array(idx_names, dtype=object),
+                'run_numbers': np.array(idx_runs, dtype=float),
+                'count': np.float64(n_cases),
+            }
+
+            scipy.io.savemat(filepath, mat_dict, long_field_names=False)
+
+        elif format == 'csv':
+            # CSV - collect from the table widget
+            data = {col[1]: [] for col in self._columns}
+
+            for row in range(self.table.rowCount()):
+                for col, col_info in enumerate(self._columns):
+                    item = self.table.item(row, col)
+                    try:
+                        value = float(item.text())
+                    except ValueError:
+                        value = item.text()
+                    data[col_info[1]].append(value)
+
+            df = pd.DataFrame(data)
+            df.to_csv(filepath, index=False)
+
+        elif format == 'hdf5':
+            import h5py
+
+            # Build per-case structure with averaged data,
+            # optional unsteady data, and metadata
+            case_id = self.cmb_case.currentData()
+            cases_to_export = []
+            if case_id is None:
+                for case in self.model.cases:
+                    if case.has_data:
+                        cases_to_export.append(case)
+            else:
+                case = self.model.cases.get(case_id)
+                if case and case.has_data:
+                    cases_to_export.append(case)
+
+            if not cases_to_export:
+                raise ExportAborted("No data to export.")
+
+            include_unsteady = self._config_wants_unsteady(config)
+            col_headers = [col[1] for col in self._columns]
+            used_names = {}
+
+            with h5py.File(filepath, 'w') as hf:
+                # Global metadata
+                hf.attrs['streamlined_version'] = __version__
+                hf.attrs['output_units'] = self.model.output_units
+                hf.attrs['n_cases'] = len(cases_to_export)
+
+                # Global calibration group
+                cal_grp = hf.create_group('calibration')
+                cal_meta = self._build_calibration_meta_dict()
+                for k, v in cal_meta.items():
+                    cal_grp.attrs[k] = v
+
+                # Global geometry group
+                geo_grp = hf.create_group('geometry')
+                geo_grp.attrs['mac'] = self.model.mac
+                geo_grp.attrs['ref_area'] = self.model.ref_area
+                geo_grp.attrs['span'] = self.model.span
+                geo_grp.create_dataset('mrc',
+                                       data=np.array(self.model.mrc))
+                geo_grp.attrs['input_units'] = self.model.units
+                geo_grp.attrs['output_units'] = self.model.output_units
+
+                for case in cases_to_export:
+                    # Sanitize case name for HDF5 group
+                    safe_name = case.name.replace('/', '_')
+
+                    # Deduplicate
+                    if safe_name in used_names:
+                        used_names[safe_name] += 1
+                        safe_name = (f"{safe_name}"
+                                     f"_{used_names[safe_name]}")
+                    else:
+                        used_names[safe_name] = 0
+
+                    case_grp = hf.create_group(safe_name)
+
+                    # Case metadata as attributes
+                    case_grp.attrs['name'] = case.name
+                    case_grp.attrs['run_number'] = (
+                        case.run_number if case.run_number else 0)
+                    if case.date:
+                        case_grp.attrs['date'] = (
+                            case.date.strftime('%Y-%m-%d %H:%M:%S'))
+                    if case.mach_number is not None:
+                        case_grp.attrs['Mach'] = case.mach_number
+                    if case.reynolds_number is not None:
+                        case_grp.attrs['Reynolds'] = (
+                            case.reynolds_number)
+
+                    # Categorized data: per-point means grouped
+                    # by Tunnel_Conditions / BRF_Forces / etc.,
+                    # plus a Raw group containing every raw DAQ
+                    # channel's per-point mean.
+                    categorized = self._build_categorized_struct(
+                        case)
+                    for cat_key, sub in categorized.items():
+                        sub_grp = case_grp.create_group(cat_key)
+                        for name, arr in sub.items():
+                            try:
+                                sub_grp.create_dataset(
+                                    name, data=np.asarray(arr))
+                            except Exception:
+                                pass
+
+                    # Custom calculator outputs: means and stds
+                    custom_means = getattr(
+                        case, 'custom_vars', None) or {}
+                    custom_stds = getattr(
+                        case, 'custom_vars_std', None) or {}
+                    if custom_means:
+                        cust_grp = case_grp.create_group('Custom')
+                        for name, arr in custom_means.items():
+                            try:
+                                cust_grp.create_dataset(
+                                    name, data=np.asarray(arr))
+                            except Exception:
+                                pass
+                    if custom_stds:
+                        cust_std_grp = case_grp.create_group(
+                            'Custom_std')
+                        for name, arr in custom_stds.items():
+                            try:
+                                cust_std_grp.create_dataset(
+                                    name, data=np.asarray(arr))
+                            except Exception:
+                                pass
+
+                    # Unsteady (time-series) data sub-group
+                    if include_unsteady:
+                        daq = getattr(case, 'daq', None)
+                        red = (getattr(daq, 'red', None)
+                               if daq is not None else None)
+                        if red:
+                            unst_grp = case_grp.create_group(
+                                'unsteady')
+                            for pt_idx, pt in enumerate(red):
+                                pt_data = (
+                                    self._extract_unsteady_point(pt))
+                                if pt_data:
+                                    pt_grp = unst_grp.create_group(
+                                        f'point_{pt_idx}')
+                                    # Store mean alpha/beta as attrs
+                                    if 'alpha' in pt_data:
+                                        pt_grp.attrs['mean_alpha'] = (
+                                            float(np.mean(
+                                                pt_data['alpha'])))
+                                    if 'beta' in pt_data:
+                                        pt_grp.attrs['mean_beta'] = (
+                                            float(np.mean(
+                                                pt_data['beta'])))
+                                    for ch_name, arr in (
+                                            pt_data.items()):
+                                        pt_grp.create_dataset(
+                                            ch_name, data=arr)

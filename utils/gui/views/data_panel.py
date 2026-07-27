@@ -247,7 +247,7 @@ class DataPanel(QWidget):
         """Handle add case request - open directory picker to append data."""
         directory = QFileDialog.getExistingDirectory(
             self, "Select Data Directory to Add",
-            self.settings.last_data_directory
+            self.settings.data_root_directory or self.settings.last_data_directory
         )
         if directory:
             self.settings.last_data_directory = directory
@@ -255,8 +255,12 @@ class DataPanel(QWidget):
 
     def _load_directory(self):
         """Open multi-directory dialog for loading data."""
-        dialog = MultiDirectoryDialog(self, self.settings.last_data_directory)
+        dialog = MultiDirectoryDialog(
+            self, self.settings.last_data_directory, self.settings
+        )
         if dialog.exec():
+            # Remember the tree root so it survives a restart
+            self.settings.data_root_directory = dialog.root_directory
             directories = dialog.get_directories()
             if directories:
                 # Update last directory setting

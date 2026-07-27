@@ -28,8 +28,11 @@ try:
     from utils.windtunnel.data_io import (
         parse_tdms_filename, group_files_by_configuration,
         extract_alpha_beta_from_filename, read_run_file,
-        copy_balance_markers, FileInfo
+        copy_balance_markers, FileInfo,
+        parse_run_file, scan_run_directory, read_run_config,
+        reference_geometry_from_config
     )
+    from utils.windtunnel.transforms import is_external_balance_data
     BACKEND_AVAILABLE = True
 except ImportError as e:
     BACKEND_AVAILABLE = False
@@ -181,24 +184,33 @@ class ProcessingWorker(QRunnable):
             # First pass: count total configurations across all directories
             total_expected = 0
             dir_configs = []  # List of (directory, grouped_files) tuples
+            mismatches = []   # manifest-vs-directory disagreements
 
             # Run files may be TDMS, HDF5 or MATLAB .mat (Freestream)
             run_patterns = ("*.tdms", "*.h5", "*.hdf5", "*.mat")
 
             for directory in self.directories:
                 data_dir = Path(directory)
-                tdms_files = sorted(
-                    f for pat in run_patterns
-                    for f in (data_dir.rglob(pat) if self.recursive
-                              else data_dir.glob(pat)))
 
-                if not tdms_files:
-                    continue
-
-                # Group files by configuration
+                # Index each directory metadata-first: manifest.json (when
+                # present) fixes the point count and acquisition order,
+                # otherwise every run file is read for its own recorded
+                # air state / configuration / angles / speed.
                 if BACKEND_AVAILABLE:
-                    grouped = group_files_by_configuration(tdms_files)
+                    file_infos, dir_mismatches = scan_run_directory(
+                        data_dir, recursive=self.recursive)
+                    mismatches.extend(f"{data_dir.name}: {m}"
+                                      for m in dir_mismatches)
+                    if not file_infos:
+                        continue
+                    grouped = group_files_by_configuration(file_infos)
                 else:
+                    tdms_files = sorted(
+                        f for pat in run_patterns
+                        for f in (data_dir.rglob(pat) if self.recursive
+                                  else data_dir.glob(pat)))
+                    if not tdms_files:
+                        continue
                     grouped = group_files_simple(tdms_files)
 
                 total_expected += len(grouped)
@@ -209,6 +221,16 @@ class ProcessingWorker(QRunnable):
                     "No Data Found",
                     "No run files (.tdms/.h5/.mat) found in selected directories")
                 return
+
+            # A manifest that disagrees with what is on disk is reported,
+            # never silently resolved in favor of one or the other: the
+            # operator has to know the index and the folder disagree.
+            if mismatches:
+                self.signals.error.emit(
+                    "Manifest Mismatch",
+                    "The run manifest does not match the files on disk:\n\n"
+                    + "\n".join(mismatches[:5])
+                    + ("\n\n..." if len(mismatches) > 5 else ""))
 
             self.signals.progress.emit(0, total_expected)
 
@@ -247,14 +269,24 @@ class ProcessingWorker(QRunnable):
             # Final progress update
             self.signals.progress.emit(total_expected, total_expected)
 
-            # If everything failed, raise as an error so the user sees it
-            if processed_count == 0 and failed_configs:
+            # Report failures so a partial (or empty) load is never
+            # mistaken for a complete one
+            if failed_configs:
+                if processed_count == 0:
+                    title = "Processing Failed"
+                    lead = "All configurations failed to process."
+                else:
+                    title = "Some Configurations Failed"
+                    lead = (f"{len(failed_configs)} of "
+                            f"{len(failed_configs) + processed_count} "
+                            "configurations failed to process; the "
+                            "loaded data is incomplete.")
                 self.signals.error.emit(
-                    "Processing Failed",
-                    "All configurations failed to process. First few errors:\n\n"
+                    title, lead + " First few errors:\n\n"
                     + "\n".join(failed_configs[:5])
                     + ("\n\n..." if len(failed_configs) > 5 else ""))
-                return
+                if processed_count == 0:
+                    return
 
             # Summary message
             if len(dir_names) == 1:
@@ -291,8 +323,14 @@ class ProcessingWorker(QRunnable):
             directory = self.directories[0] if self.directories else ""
         run_name = Path(directory).name
 
-        # Create case name from run + configuration
-        case_name = f"{run_name}_{config_name}" if config_name != 'Unknown' else run_name
+        # Create case name from run + configuration.  The configuration
+        # now comes from the run's own record, which for a
+        # single-configuration test equals the directory name — don't
+        # repeat it ('LSWT_Test5_LSWT_Test5').
+        if config_name in ('Unknown', run_name):
+            case_name = run_name
+        else:
+            case_name = f"{run_name}_{config_name}"
 
         # Collect all unique alpha/beta combinations
         alpha_beta_pairs = []
@@ -351,7 +389,11 @@ class ProcessingWorker(QRunnable):
                                alphas: list, betas: list,
                                n_alpha: int, n_beta: int, index: int,
                                directory: str = None) -> TestCase:
-        """Process files using the windtunnel backend."""
+        """Process files using the windtunnel backend.
+
+        Raises RuntimeError if the reduction cannot be completed, so the
+        caller reports the failure instead of returning demo data.
+        """
         try:
             from utils.windtunnel import DAQ
 
@@ -374,8 +416,8 @@ class ProcessingWorker(QRunnable):
             #      with a different balance cal on demand),
             #   2. else the calibration MATRIX freestream injected into the
             #      run files (no .vol needed),
-            #   3. else none — internal data then falls back to demo mode;
-            #      an external (ATE) balance needs no balance cal.
+            #   3. else none — internal data then fails with a reported
+            #      error; an external (ATE) balance needs no balance cal.
             if self.balance_cal:
                 daq.cal = self.balance_cal
             elif self.balance_cal_file:
@@ -444,8 +486,12 @@ class ProcessingWorker(QRunnable):
 
                 daq.raw.append(raw_entry)
 
-            # Reduce data
-            if daq.cal:
+            # Reduce data.  External (ATE) balance data carries resolved
+            # loads and needs no .vol; internal (bridge-volt) data does.
+            needs_cal = any(
+                not is_external_balance_data(entry.get('AirOn') or {})
+                for entry in daq.raw)
+            if daq.cal or not needs_cal:
                 daq.reduce_datasets()
                 daq.reduce_steady_state()
 
@@ -473,6 +519,10 @@ class ProcessingWorker(QRunnable):
                 case.CRoll_std = ss.CRoll_std
                 case.CPitch_std = ss.CPitch_std
                 case.CYaw_std = ss.CYaw_std
+
+                # Per-point acquisition metadata (run number, hysteresis
+                # leg) aligned to the reduced point order
+                self._attach_point_metadata(case, on_sorted, ss)
 
                 # Store DAQ reference for later use
                 case.daq = daq
@@ -625,19 +675,55 @@ class ProcessingWorker(QRunnable):
 
                 return case
             else:
-                # No calibration - fall back to demo mode
-                return self._create_case_from_files(
-                    case_name, config_name, air_on_files,
-                    alphas, betas, n_alpha, n_beta, index
-                )
+                # No calibration for internal balance data.  Never
+                # substitute demo numbers here: fabricated coefficients
+                # are indistinguishable from a real reduction once they
+                # reach the table.
+                raise ValueError(
+                    "No balance calibration available. Load a balance "
+                    "calibration (.vol) file, or record runs with an "
+                    "injected calibration matrix, then reprocess.")
 
         except Exception as e:
+            # Surface the failure to the caller (which reports it to the
+            # user) instead of quietly returning fabricated demo data.
             traceback.print_exc()
-            # Fall back to simplified processing
-            return self._create_case_from_files(
-                case_name, config_name, air_on_files,
-                alphas, betas, n_alpha, n_beta, index
-            )
+            raise RuntimeError(
+                f"Reduction failed for '{case_name}': "
+                f"{type(e).__name__}: {e}") from e
+
+    @staticmethod
+    def _attach_point_metadata(case: TestCase, file_infos: list, ss) -> None:
+        """Populate case.run_numbers / case.sweep_dirs, one entry per point.
+
+        Both arrays are parallel to case.alphas — same shape, same point
+        order — so a consumer can sort or split on them by index.
+        reduce_steady_state records in ``ss.indices`` the permutation it
+        applied to the raw point order, which is the order ``file_infos``
+        was appended to daq.raw, so that permutation maps files to
+        reduced points.  Anything that would break the alignment (a point
+        count mismatch, a missing index) leaves the arrays EMPTY rather
+        than misaligned, and an array stays empty when no file carried
+        that field at all.
+        """
+        order = getattr(ss, 'indices', None)
+        if order is None or not file_infos:
+            return
+        order = np.asarray(order, dtype=int).ravel()
+        if order.size != len(file_infos) or order.size != case.alphas.size:
+            return
+
+        ordered = [file_infos[i] for i in order]
+        runs = [getattr(info, 'run_number', None) for info in ordered]
+        legs = [str(getattr(info, 'sweep_dir', '') or '') for info in ordered]
+
+        if any(run is not None for run in runs):
+            case.run_numbers = np.array(
+                [float(run) if run is not None else np.nan for run in runs],
+                dtype=float).reshape(case.alphas.shape)
+        if any(legs):
+            case.sweep_dirs = np.array(legs, dtype=str).reshape(
+                case.alphas.shape)
 
     def _create_case_from_files(self, case_name: str, config_name: str,
                                  files: list, alphas: list, betas: list,
@@ -749,6 +835,14 @@ class DataController(QObject):
         self._pressure_cal_file = None
         self._current_worker = None
         self._last_directories: List[str] = []
+
+        # The measurement config the loaded run files recorded
+        # (meta.config_json / the manifest 'config' block), kept for
+        # anything that wants to read what the run was set up with.
+        # _config_seeded makes the geometry seeding a FIRST-LOAD initial
+        # value: it must never rewrite what the operator has set since.
+        self.last_run_config: dict = {}
+        self._config_seeded = False
 
         self._thread_pool = QThreadPool()
         self._thread_pool.setMaxThreadCount(1)  # Process sequentially
@@ -925,6 +1019,12 @@ class DataController(QObject):
                 + "\n\nIf the files are in subfolders, enable 'Recursive' on the Load Data dialog.")
             return
 
+        # Seed the reference geometry / balance config from what the runs
+        # recorded, BEFORE the geometry sanity check below: the operator
+        # should not have to retype into the Geometry dialog what the run
+        # already wrote into every file.
+        self._seed_config_from_run_files(valid_dirs)
+
         # Balance calibration is required to compute forces
         if not self._balance_cal and not self._balance_cal_file:
             self.error_occurred.emit(
@@ -1005,6 +1105,65 @@ class DataController(QObject):
 
         self._current_worker = worker
         self._thread_pool.start(worker)
+
+    def _seed_config_from_run_files(self, directories: List[str]) -> None:
+        """Seed model geometry / balance config from what the run recorded.
+
+        Freestream writes the reference geometry, the MRC and the balance
+        configuration into every run file (meta.config_json) and into the
+        directory manifest, so retyping them into the Geometry dialog is
+        redundant data entry with a chance of disagreeing with the file.
+
+        Two rules keep this honest.  Only values the config REALLY
+        carries are seeded (see reference_geometry_from_config: the
+        1.0-placeholder set is rejected in favor of the set that holds
+        real dimensions, and when neither does, nothing is seeded).  And
+        seeding is an INITIAL value only: it applies once per session and
+        only to fields still sitting at their untouched defaults, so a
+        value the operator set is never overwritten.  The parsed config
+        is exposed on ``last_run_config`` either way.
+        """
+        if not BACKEND_AVAILABLE:
+            return
+
+        config = {}
+        for directory in directories:
+            try:
+                config = read_run_config(directory)
+            except Exception:
+                traceback.print_exc()
+                config = {}
+            if config:
+                break
+
+        self.last_run_config = config
+        if not config or self._config_seeded:
+            return
+        self._config_seeded = True
+
+        seed = reference_geometry_from_config(config)
+        if not seed:
+            return
+
+        geo = self.model.geometries.setdefault(self.model.default_geometry, {})
+        seeded = []
+        for key, default in (('mac', 1.0), ('ref_area', 1.0), ('span', 1.0)):
+            if key in seed and float(geo.get(key, default)) == default:
+                geo[key] = float(seed[key])
+                seeded.append(f"{key}={geo[key]:g}")
+        if 'mrc' in seed and not any(
+                abs(float(v)) > 1e-12
+                for v in geo.get('mrc', [0.0, 0.0, 0.0])):
+            geo['mrc'] = [float(v) for v in seed['mrc']]
+            seeded.append("MRC=({:g}, {:g}, {:g})".format(*geo['mrc']))
+        if (seed.get('balance_config', 'Force') != 'Force'
+                and self.model.balance_config == 'Force'):
+            self.model.balance_config = seed['balance_config']
+            seeded.append(f"balance={self.model.balance_config}")
+
+        if seeded:
+            self.status_changed.emit(
+                "Seeded from run metadata: " + ", ".join(seeded))
 
     def load_data_directory(self, directory: str):
         """Load and process data from a single directory (legacy support)."""
@@ -1264,6 +1423,36 @@ class DataController(QObject):
         # Use load_data_directories with clear_existing=False
         self.load_data_directories([directory], clear_existing=False)
 
+    @staticmethod
+    def _speed_sort_key(case, n: int) -> np.ndarray:
+        """Build the tunnel-speed grouping key used to order exported rows.
+
+        Per-point Mach (rounded to 3 dp) is preferred.  A low-speed
+        tunnel driven by a fan-Hz sweep can report Mach as missing,
+        misaligned or all-zero, so fall back to velocity (rounded to
+        1 dp) whenever Mach resolves fewer than two speed steps and
+        velocity resolves more.  If neither varies the key is all
+        zeros and the order degrades gracefully to (beta, alpha).
+        """
+        def _flat(name):
+            arr = getattr(case, name, None)
+            if arr is None:
+                return np.array([])
+            return np.asarray(arr, dtype=float).flatten()
+
+        machs = _flat('machs')
+        vels = _flat('velocities')
+        mach_key = np.round(machs, 3) if machs.size == n else None
+        vel_key = np.round(vels, 1) if vels.size == n else None
+
+        if mach_key is None:
+            return vel_key if vel_key is not None else np.zeros(n)
+        if (vel_key is not None
+                and np.unique(mach_key).size < 2
+                and np.unique(vel_key).size > np.unique(mach_key).size):
+            return vel_key
+        return mach_key
+
     def export_data(self, filepath: str, format: str = 'csv'):
         """Export processed data."""
         try:
@@ -1279,7 +1468,10 @@ class DataController(QObject):
 
                         alphas = case.alphas.flatten()
                         betas = case.betas.flatten()
-                        sort_order = np.lexsort((alphas, np.round(betas)))
+                        # Speed primary, beta secondary, alpha tertiary
+                        speeds = self._speed_sort_key(case, alphas.size)
+                        sort_order = np.lexsort(
+                            (alphas, np.round(betas), speeds))
 
                         case_data = []
                         for i in sort_order:
@@ -1339,7 +1531,10 @@ class DataController(QObject):
 
                     alphas = case.alphas.flatten()
                     betas = case.betas.flatten()
-                    sort_order = np.lexsort((alphas, np.round(betas)))
+                    # Speed primary, beta secondary, alpha tertiary
+                    speeds = self._speed_sort_key(case, alphas.size)
+                    sort_order = np.lexsort(
+                        (alphas, np.round(betas), speeds))
 
                     for i in sort_order:
                         row = {

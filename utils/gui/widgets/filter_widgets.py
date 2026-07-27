@@ -206,40 +206,6 @@ class FilterToolbar(QWidget):
 
         layout.addWidget(mach_group)
 
-        # Reynolds number filter
-        re_group = QWidget()
-        re_layout = QHBoxLayout(re_group)
-        re_layout.setContentsMargins(0, 0, 0, 0)
-        re_layout.setSpacing(4)
-
-        re_label = QLabel("Re:")
-        re_layout.addWidget(re_label)
-
-        self.cmb_reynolds = QComboBox()
-        self.cmb_reynolds.addItem("All", None)
-        self.cmb_reynolds.setMinimumWidth(100)
-        self.cmb_reynolds.currentIndexChanged.connect(lambda: self.filters_changed.emit())
-        re_layout.addWidget(self.cmb_reynolds)
-
-        layout.addWidget(re_group)
-
-        # Velocity filter
-        vel_group = QWidget()
-        vel_layout = QHBoxLayout(vel_group)
-        vel_layout.setContentsMargins(0, 0, 0, 0)
-        vel_layout.setSpacing(4)
-
-        vel_label = QLabel("U_inf:")
-        vel_layout.addWidget(vel_label)
-
-        self.cmb_velocity = QComboBox()
-        self.cmb_velocity.addItem("All", None)
-        self.cmb_velocity.setMinimumWidth(90)
-        self.cmb_velocity.currentIndexChanged.connect(lambda: self.filters_changed.emit())
-        vel_layout.addWidget(self.cmb_velocity)
-
-        layout.addWidget(vel_group)
-
         layout.addStretch()
 
         # Reset button
@@ -283,50 +249,15 @@ class FilterToolbar(QWidget):
 
         self.cmb_mach.blockSignals(False)
 
-    def set_reynolds_values(self, reynolds: List[float]):
-        """Set available Reynolds numbers."""
-        self.cmb_reynolds.blockSignals(True)
-        self.cmb_reynolds.clear()
-        self.cmb_reynolds.addItem("All", None)
-
-        for re in reynolds:
-            if re >= 1e6:
-                self.cmb_reynolds.addItem(f"{re/1e6:.2f}M", re)
-            else:
-                self.cmb_reynolds.addItem(f"{re:.0f}", re)
-
-        self.cmb_reynolds.blockSignals(False)
-
-    def set_velocity_values(self, velocities: List[float]):
-        """Set available velocities (m/s)."""
-        self.cmb_velocity.blockSignals(True)
-        self.cmb_velocity.clear()
-        self.cmb_velocity.addItem("All", None)
-
-        for vel in velocities:
-            self.cmb_velocity.addItem(f"{vel:.1f} m/s", vel)
-
-        self.cmb_velocity.blockSignals(False)
-
     def get_selected_mach(self) -> Optional[float]:
         """Get selected Mach filter."""
         return self.cmb_mach.currentData()
-
-    def get_selected_reynolds(self) -> Optional[float]:
-        """Get selected Reynolds number filter."""
-        return self.cmb_reynolds.currentData()
-
-    def get_selected_velocity(self) -> Optional[float]:
-        """Get selected velocity filter."""
-        return self.cmb_velocity.currentData()
 
     def reset_filters(self):
         """Reset all filters to default (select all)."""
         self.alpha_filter.select_all()
         self.beta_filter.select_all()
         self.cmb_mach.setCurrentIndex(0)
-        self.cmb_reynolds.setCurrentIndex(0)
-        self.cmb_velocity.setCurrentIndex(0)
         self.filters_changed.emit()
 
 

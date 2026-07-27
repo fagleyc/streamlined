@@ -150,6 +150,14 @@ class TestCase:
     CPitch_std: np.ndarray = field(default_factory=lambda: np.array([]))
     CYaw_std: np.ndarray = field(default_factory=lambda: np.array([]))
 
+    # Per-point acquisition metadata, in the SAME point order (and shape)
+    # as self.alphas: run_numbers holds the acquisition run number of each
+    # point, sweep_dirs its hysteresis leg ('' / 'up' / 'dn').  Both stay
+    # EMPTY when the source run files carried no such record, so consumers
+    # must check .size against alphas.size before indexing them.
+    run_numbers: np.ndarray = field(default_factory=lambda: np.array([]))
+    sweep_dirs: np.ndarray = field(default_factory=lambda: np.array([]))
+
     # Per-point tunnel conditions arrays
     machs: np.ndarray = field(default_factory=lambda: np.array([]))
     reynolds: np.ndarray = field(default_factory=lambda: np.array([]))

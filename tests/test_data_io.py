@@ -691,6 +691,100 @@ class TestInstrumentBasedTunnelCal:
         out = _pressure_channel_to_psi(np.array([1.0]), 'Ptot', cal, None, 'P690')
         assert out[0] == pytest.approx(1.92604)
 
+    def test_pressure_unit_conversion_to_psi(self):
+        # cal_unit is converted to PSI: kPa, inH2O, Pa -> psi
+        for unit, value, expect in (('kPa', 100.0, 14.5037738),
+                                    ('inH2O', 27.6799, 1.0),
+                                    ('Pa', 6894.75729, 1.0),
+                                    ('psia', 11.44, 11.44),
+                                    ('psid', 0.5, 0.5)):
+            cal = {'Ptot': {'slope': 1.0, 'offset': 0.0, 'unit': unit,
+                            'type': 'identity'}}
+            out = _pressure_channel_to_psi(np.array([value]), 'Ptot', cal,
+                                           None, 'P690')
+            assert out[0] == pytest.approx(expect, rel=1e-4), unit
+
+    def test_pdiff_linear_psid_gives_calibrated_q(self):
+        # The real LSWT NI Pdiff cal: slope 0.077266, unit psid -> q in psi
+        cal = {'Pdiff': {'slope': 0.077266, 'offset': 0.0, 'unit': 'psid',
+                         'type': 'linear'}}
+        out = _pressure_channel_to_psi(np.array([0.0884]), 'Pdiff', cal,
+                                       None, 'P220')
+        assert out[0] == pytest.approx(0.0884 * 0.077266)
+
+
+_LSWT_TEST5 = Path(r"C:\Users\Casey\Nextcloud\Software\python\projects"
+                   r"\freestream\runs\LSWT_Test5")
+
+
+@pytest.mark.skipif(not (_LSWT_TEST5 / "run_0005_alpha_0.0_beta_0.0_Hz_20.0.mat"
+                         ).exists(), reason="LSWT_Test5 dataset not present")
+class TestRealLSWTMatCalCapture:
+    """Guards Casey's real LSWT .mat data: the per-channel cal MUST be
+    captured from the .mat (not None -> DaqBook default), and with the Heise
+    total pressure in psi the LSWT reduction yields ~10/20 m/s."""
+
+    def test_mat_captures_injected_channel_cal(self):
+        raw, _ = read_run_file(str(
+            _LSWT_TEST5 / "run_0005_alpha_0.0_beta_0.0_Hz_20.0.mat"))
+        cc = raw.properties.get('channel_cal')
+        assert cc is not None, "channel_cal NOT captured from .mat!"
+        assert cc['Pdiff']['slope'] == pytest.approx(0.077266)
+        assert cc['Pdiff']['type'] == 'linear'
+        assert cc['Temp']['unit'].lower() in ('degf', 'f')
+        assert cc['Temp']['type'] == 'identity'
+
+    def test_lswt_velocity_correct_on_raw_data(self):
+        # The RAW file (Ptot mislabeled 'inH2O' but value is psi) must reduce
+        # to ~10/20 m/s directly — the absolute-pressure plausibility guard
+        # auto-corrects the mislabeled unit. No manual override.
+        vels = {}
+        for hz, fn in ((20, "run_0005_alpha_0.0_beta_0.0_Hz_20.0.mat"),
+                       (40, "run_0009_alpha_0.0_beta_0.0_Hz_40.0.mat")):
+            raw, _ = read_run_file(str(_LSWT_TEST5 / fn))
+            flat = dict(raw.data)
+            copy_balance_markers(raw, flat)
+            cond = calc_tunnel_conditions(flat, {}, facility='LSWT')
+            vels[hz] = float(np.mean(cond.U_inf))
+        assert 8.5 < vels[20] < 11.5, vels[20]       # ~10 m/s
+        assert 18.0 < vels[40] < 22.5, vels[40]      # ~20 m/s
+
+
+class TestAbsolutePressureGuard:
+    """The absolute-pressure plausibility guard only fires on a mislabeled
+    smart-indicator total pressure; correctly-labeled psia is untouched."""
+
+    def test_correct_psia_untouched(self):
+        cal = {'Ptot': {'slope': 1.0, 'offset': 0.0, 'unit': 'psia',
+                        'type': 'identity'}}
+        out = _pressure_channel_to_psi(np.full(4, 14.7), 'Ptot', cal, None,
+                                       'P690', absolute=True)
+        np.testing.assert_allclose(out, 14.7)
+
+    def test_mislabeled_inh2o_total_pressure_treated_as_psi(self):
+        # 11.44 tagged inH2O -> 0.41 psia (impossible total pressure) -> use raw
+        cal = {'Ptot': {'slope': 1.0, 'offset': 0.0, 'unit': 'inH2O',
+                        'type': 'identity'}}
+        out = _pressure_channel_to_psi(np.full(4, 11.44), 'Ptot', cal, None,
+                                       'P690', absolute=True)
+        np.testing.assert_allclose(out, 11.44)       # raw kept as psi
+
+    def test_guard_off_by_default_for_differential(self):
+        # Pdiff (not absolute) is never guarded — a tiny value is legitimate
+        cal = {'Pdiff': {'slope': 1.0, 'offset': 0.0, 'unit': 'inH2O',
+                         'type': 'identity'}}
+        out = _pressure_channel_to_psi(np.full(4, 11.44), 'Pdiff', cal, None,
+                                       'P220')          # absolute=False
+        np.testing.assert_allclose(out, 11.44 * 0.0361272893)
+
+    def test_genuine_low_inh2o_absolute_not_forced_when_raw_also_low(self):
+        # a genuinely small reading (raw < 3) is NOT forced to psi
+        cal = {'Ptot': {'slope': 1.0, 'offset': 0.0, 'unit': 'inH2O',
+                        'type': 'identity'}}
+        out = _pressure_channel_to_psi(np.full(4, 2.0), 'Ptot', cal, None,
+                                       'P690', absolute=True)
+        np.testing.assert_allclose(out, 2.0 * 0.0361272893)
+
     def test_pressure_builtin_default_when_no_cal(self):
         # No injected cal, no .pcf -> built-in DaqBook default slope
         out = _pressure_channel_to_psi(np.array([1.0]), 'Ptot', None, None, 'P690')

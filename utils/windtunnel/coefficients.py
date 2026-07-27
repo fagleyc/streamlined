@@ -107,27 +107,76 @@ def _convert_thermocouple_to_celsius(raw_temp: np.ndarray,
 DAQBOOK_DEFAULT_PRESSURE_SLOPES = {'Pdiff': 0.386949, 'Ptot': 1.92604}
 DAQBOOK_DEFAULT_TEMP_SLOPE = 10.0        # 0.1 V/degC -> degC
 
+# Conversion factors from a pressure engineering unit -> PSI, so an injected
+# cal that produces (say) kPa or inH2O is normalized to the PSI the isentropic
+# chain works in. psi/psia/psid/psig are 1:1 (gauge vs absolute is a datum,
+# not a scale). Unknown units pass through as already-PSI (factor 1).
+_PRESSURE_TO_PSI = {
+    'psi': 1.0, 'psia': 1.0, 'psid': 1.0, 'psig': 1.0,
+    'pa': 1.0 / 6894.75729, 'kpa': 0.145037738, 'mpa': 145.037738,
+    'bar': 14.5037738, 'mbar': 0.0145037738, 'hpa': 0.0145037738,
+    'inh2o': 0.0361272893, 'inh2o@20c': 0.0360613,
+    'cmwc': 0.014223343, 'mmwc': 0.0014223343, 'cmh2o': 0.014223343,
+    'mmh2o': 0.0014223343,
+    'inhg': 0.4911541, 'mmhg': 0.0193367747, 'torr': 0.0193367747,
+    'ftsw': 0.4444, 'kg/cm2': 14.2233433, 'atm': 14.6959488,
+}
+
+
+def _pressure_unit_to_psi_factor(unit) -> float:
+    """PSI per one of ``unit`` (Heise EUNIT vocabulary etc.). Unknown/empty
+    -> 1.0 (treat as already PSI)."""
+    u = (str(unit or '').strip().lower().replace(' ', '').replace('°', ''))
+    return _PRESSURE_TO_PSI.get(u, 1.0)
+
+
+# A ground wind tunnel's ABSOLUTE total pressure is never below this (that
+# would be > ~30,000 ft of altitude); used to catch a mislabeled unit on a
+# smart-indicator absolute-pressure channel (see _pressure_channel_to_psi).
+_MIN_PLAUSIBLE_TOTAL_PSIA = 3.0
+
 
 def _pressure_channel_to_psi(raw_channel: np.ndarray, channel_key: str,
                              channel_cal: Optional[Dict[str, Any]],
                              pressure_cal: Optional[Dict[str, Any]],
-                             cal_channel_name: str) -> np.ndarray:
+                             cal_channel_name: str,
+                             absolute: bool = False) -> np.ndarray:
     """Convert one raw tunnel pressure channel to engineering PSI.
 
     Priority (Casey's unified pipeline):
       1. freestream INJECTED per-channel cal (``channel_cal[channel_key]``):
-         ``identity`` -> the recorded array is already PSI (Heise); ``linear``
-         -> raw*slope + offset. This removes the need for a .pcf.
-      2. a legacy external .pcf (``pressure_cal[cal_channel_name].slope``) if
-         one was explicitly supplied.
+         ``identity`` -> the recorded array is already in ``cal_unit``
+         engineering units (a smart indicator like the Heise); ``linear`` ->
+         raw*slope + offset in ``cal_unit``. Either way the result is then
+         converted from ``cal_unit`` to PSI (kPa/inH2O/... -> psi), so units
+         are handled correctly regardless of the instrument's setting.
+      2. a legacy external .pcf (``pressure_cal[cal_channel_name].slope``).
       3. the built-in DaqBook default slope (no cal file needed).
+
+    ``absolute`` marks an ABSOLUTE total-pressure channel (Ptot). A smart
+    indicator (Heise) reports calibrated engineering values with an identity
+    cal; if its port UNIT is mislabeled (e.g. an LSWT Heise reading ambient
+    PSI but tagged 'inH2O'), the cal_unit conversion produces a physically
+    impossible total pressure (< ~3 psia). In that one case the label is
+    trusted less than physics: the raw engineering value is used as PSI (which
+    is what Casey's Heise actually reports). Differential (Pdiff) channels are
+    NOT guarded — they are legitimately tiny.
     """
     arr = np.asarray(raw_channel, dtype=float)
     ical = (channel_cal or {}).get(channel_key)
     if ical is not None:
-        if str(ical.get('type', 'linear')).lower() == 'identity':
-            return arr                                   # already engineering
-        return arr * float(ical.get('slope', 1.0)) + float(ical.get('offset', 0.0))
+        identity = str(ical.get('type', 'linear')).lower() == 'identity'
+        eng = (arr if identity
+               else arr * float(ical.get('slope', 1.0))
+               + float(ical.get('offset', 0.0)))
+        psi = eng * _pressure_unit_to_psi_factor(ical.get('unit'))
+        if (absolute and identity and eng.size
+                and np.nanmean(psi) < _MIN_PLAUSIBLE_TOTAL_PSIA
+                <= np.nanmean(eng)):
+            # mislabeled unit on a smart-indicator absolute pressure: the raw
+            # engineering value is already PSI (Casey's Heise reads psia).
+            return eng
+        return psi
     if pressure_cal and cal_channel_name in pressure_cal:
         return arr * pressure_cal[cal_channel_name].slope
     return arr * DAQBOOK_DEFAULT_PRESSURE_SLOPES[channel_key]
@@ -223,9 +272,10 @@ def calc_tunnel_conditions(raw_data: Dict[str, np.ndarray],
             raw_data['Pdiff'], 'Pdiff', channel_cal, pressure_cal, pdiff_channel)
         dP_Pa = dP_psi * PSI_TO_PA
 
-        # Total (stagnation) pressure P0 (Pa)
+        # Total (stagnation) pressure P0 (Pa) — absolute, plausibility-guarded
         P0_psi = _pressure_channel_to_psi(
-            raw_data['Ptot'], 'Ptot', channel_cal, pressure_cal, p0_channel)
+            raw_data['Ptot'], 'Ptot', channel_cal, pressure_cal, p0_channel,
+            absolute=True)
         P0_Pa = P0_psi * PSI_TO_PA
 
         # Total (stagnation) temperature T0
@@ -319,7 +369,7 @@ def calc_tunnel_conditions(raw_data: Dict[str, np.ndarray],
             q_Pa = np.maximum(cond.Q_mks, 0.0)
             P0_Pa = _pressure_channel_to_psi(
                 raw_data['Ptot'], 'Ptot', channel_cal, pressure_cal,
-                p0_channel) * PSI_TO_PA
+                p0_channel, absolute=True) * PSI_TO_PA
             T0_C = _temperature_channel_to_celsius(
                 raw_data['Temp'], channel_cal, temp_cal_mode)
             T0_K = T0_C + C_TO_K

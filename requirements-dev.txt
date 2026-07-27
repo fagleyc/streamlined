@@ -6,3 +6,6 @@
 
 # Build tool for standalone executable
 pyinstaller>=6.0
+
+# Test runner for tests/ (QT_QPA_PLATFORM=offscreen for the GUI tests)
+pytest>=8.0

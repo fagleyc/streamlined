@@ -6,10 +6,13 @@ Functions for reading wind tunnel data files (TDMS, HDF5 and MATLAB .mat
 formats) and exporting processed data.
 """
 
+import json
+import warnings
+
 import numpy as np
 import pandas as pd
 from pathlib import Path
-from typing import Dict, Any, Tuple, Optional
+from typing import Dict, Any, List, Tuple, Optional
 from dataclasses import dataclass, field
 from scipy.interpolate import interp1d
 
@@ -766,6 +769,7 @@ def read_mat_file(filepath: str) -> Tuple[RawData, Dict[str, Any]]:
     # Collect all channels and their time vectors
     channels = {}
     channel_units = {}
+    channel_cal = {}
     present_groups = set()
 
     for key, value in contents.items():
@@ -792,6 +796,23 @@ def read_mat_file(filepath: str) -> Tuple[RawData, Dict[str, Any]]:
                       if _is_mat_struct(g_meta) else None)
             if c_meta is not None and hasattr(c_meta, 'unit'):
                 channel_units[channel_name] = _mat_to_python(c_meta.unit)
+            # freestream injects per-channel tunnel cal into the .mat's
+            # meta.channels.<group>.<channel> struct (cal_slope/offset/unit/
+            # type) — same contract as the HDF5 dataset attrs. Capture it so
+            # the reduction applies the REAL device cal (not the built-in
+            # DaqBook default) for .mat run files too.
+            if c_meta is not None and (hasattr(c_meta, 'cal_type')
+                                       or hasattr(c_meta, 'cal_slope')):
+                channel_cal[channel_name] = {
+                    'slope': float(_mat_to_python(c_meta.cal_slope))
+                    if hasattr(c_meta, 'cal_slope') else 1.0,
+                    'offset': float(_mat_to_python(c_meta.cal_offset))
+                    if hasattr(c_meta, 'cal_offset') else 0.0,
+                    'unit': str(_mat_to_python(c_meta.cal_unit))
+                    if hasattr(c_meta, 'cal_unit') else '',
+                    'type': str(_mat_to_python(c_meta.cal_type))
+                    if hasattr(c_meta, 'cal_type') else 'linear',
+                }
             if (c_meta is not None and hasattr(c_meta, 'wf_increment')
                     and hasattr(c_meta, 'wf_samples')):
                 dt = float(_mat_to_python(c_meta.wf_increment))
@@ -809,6 +830,11 @@ def read_mat_file(filepath: str) -> Tuple[RawData, Dict[str, Any]]:
 
     # Resample everything onto the fastest channel's time base
     _resample_channels_to_fastest(channels, raw)
+
+    # Per-channel injected tunnel calibration (empty for legacy files ->
+    # the reduction falls back to the built-in DaqBook default cal).
+    if channel_cal:
+        raw.properties['channel_cal'] = channel_cal
 
     # meta.run carries the run parameters (root attrs) -> file properties,
     # restored to their original (pre-sanitization) key names
@@ -917,6 +943,188 @@ def read_run_file(filepath: str) -> Tuple[RawData, Dict[str, Any]]:
     return read_tdms_file(filepath)
 
 
+# ---------------------------------------------------------------------------
+# Metadata-only ingest: the facts a run file records about itself
+# ---------------------------------------------------------------------------
+
+# Memoised run metadata, keyed by (absolute path, mtime, size). A directory
+# scan asks the same file the same questions several times (classification,
+# grouping, config seeding); it must be opened once, not once per question.
+_RUN_METADATA_CACHE: Dict[Tuple[str, float, int], Dict[str, Any]] = {}
+
+# Canonical air-state spellings. Anything else recorded in a file is not
+# understood and falls back to the filename rather than being guessed at.
+_AIR_STATES = {'airon': 'AirOn', 'airoff': 'AirOff'}
+
+
+def _parse_config_json(value: Any) -> Dict[str, Any]:
+    """The measurement config behind a ``config_json`` attribute.
+
+    Returns ``{}`` when the attribute is absent, empty or not parsable
+    JSON — a config that cannot be read seeds nothing.
+    """
+    text = _mat_to_python(value)
+    if isinstance(text, bytes):
+        text = text.decode('utf-8', errors='replace')
+    if not isinstance(text, str) or not text.strip():
+        return {}
+    try:
+        parsed = json.loads(text)
+    except ValueError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _read_mat_run_metadata(path: Path) -> Dict[str, Any]:
+    """``meta.run`` attrs + parsed ``meta.config_json`` from a .mat run file.
+
+    ``variable_names=['meta']`` is what keeps this cheap: the device
+    groups (the megabytes of channel arrays) are never unpacked.
+    """
+    if not MAT_AVAILABLE:
+        return {}
+
+    contents = scipy_io.loadmat(str(path), variable_names=['meta'],
+                                squeeze_me=True, struct_as_record=False)
+    meta = contents.get('meta')
+    if not _is_mat_struct(meta):
+        return {}
+
+    # Restore the original (pre-sanitization) attr names, as read_mat_file
+    # does when it merges meta.run into raw.properties.
+    run_names: Dict[str, Any] = {}
+    name_map = getattr(meta, 'name_map', None)
+    if _is_mat_struct(name_map):
+        run_names = _mat_struct_to_dict(getattr(name_map, 'run', None))
+
+    info: Dict[str, Any] = {}
+    run_struct = getattr(meta, 'run', None)
+    if _is_mat_struct(run_struct):
+        for key in run_struct._fieldnames:
+            info[str(run_names.get(key, key))] = _mat_to_python(
+                getattr(run_struct, key))
+
+    info['config'] = _parse_config_json(getattr(meta, 'config_json', None))
+    return info
+
+
+def _read_hdf5_run_metadata(path: Path) -> Dict[str, Any]:
+    """Root attrs of an HDF5 run file (no dataset is ever touched).
+
+    h5py is optional; without it this branch degrades to ``{}`` and the
+    caller falls back to the filename parsers.
+    """
+    if not HDF5_AVAILABLE:
+        return {}
+
+    info: Dict[str, Any] = {}
+    with h5py.File(str(path), 'r') as f:
+        for key, value in f.attrs.items():
+            if isinstance(value, bytes):
+                value = value.decode('utf-8', errors='replace')
+            info[str(key)] = value
+    info['config'] = _parse_config_json(info.pop('config_json', None))
+    return info
+
+
+def read_run_metadata(filepath: str) -> Dict[str, Any]:
+    """
+    Read a run file's METADATA only — never its channel arrays.
+
+    Freestream records into every run file the facts Streamlined used to
+    guess from the filename: air state, configuration, alpha/beta, tunnel
+    speed, acquisition run number and hysteresis leg. Reading just those
+    is cheap enough to run over a whole directory:
+
+    * ``.mat``  -- ``loadmat(variable_names=['meta'])``, so only the meta
+      struct is unpacked.
+    * ``.h5``   -- the ROOT attributes via h5py.
+    * ``.tdms`` -- ``{}``; legacy files carry no such record and stay on
+      the filename path.
+
+    Results are memoised per (path, mtime, size).
+
+    Parameters
+    ----------
+    filepath : str
+        Path to the run file
+
+    Returns
+    -------
+    dict
+        The flat ``meta.run`` attributes plus a ``'config'`` key holding
+        the parsed ``meta.config_json`` measurement config (``{}`` when
+        absent). A missing, unreadable or corrupt file returns ``{}``:
+        this never raises, since one bad file must not abort the scan of
+        a directory.
+    """
+    path = Path(filepath)
+    try:
+        stat = path.stat()
+    except OSError:
+        return {}                     # nonexistent path -> filename only
+
+    key = (str(path), stat.st_mtime, stat.st_size)
+    cached = _RUN_METADATA_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    suffix = path.suffix.lower()
+    try:
+        if suffix == '.mat':
+            meta = _read_mat_run_metadata(path)
+        elif suffix in ('.h5', '.hdf5'):
+            meta = _read_hdf5_run_metadata(path)
+        else:
+            meta = {}
+    except Exception as exc:
+        warnings.warn(f"Could not read run metadata from '{path.name}': "
+                      f"{type(exc).__name__}: {exc}")
+        meta = {}
+
+    _RUN_METADATA_CACHE[key] = meta
+    return meta
+
+
+def _meta_str(meta: Dict[str, Any], key: str) -> Optional[str]:
+    """A non-empty string metadata value, or None when absent/blank."""
+    value = meta.get(key)
+    if value is None:
+        return None
+    if isinstance(value, bytes):
+        value = value.decode('utf-8', errors='replace')
+    text = str(value).strip()
+    return text or None
+
+
+def _meta_float(meta: Dict[str, Any], key: str) -> Optional[float]:
+    """A finite float metadata value, or None when absent/unusable."""
+    try:
+        value = float(meta[key])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return value if np.isfinite(value) else None
+
+
+def _meta_int(meta: Dict[str, Any], key: str) -> Optional[int]:
+    """An integer metadata value, or None when absent/unusable."""
+    value = _meta_float(meta, key)
+    return None if value is None else int(round(value))
+
+
+def _normalize_air_state(value: Any) -> Optional[str]:
+    """Canonical 'AirOn'/'AirOff' for a recorded air-state value.
+
+    Returns None for anything not recognized, so the caller falls back
+    to the filename instead of inventing a third state (the grouping
+    dicts are keyed on exactly these names).
+    """
+    if value is None:
+        return None
+    text = str(value).strip().lower().replace(' ', '').replace('_', '')
+    return _AIR_STATES.get(text)
+
+
 def read_tdms_simple(filepath: str) -> Dict[str, np.ndarray]:
     """
     Simple TDMS reader that returns a dictionary of arrays.
@@ -1006,6 +1214,320 @@ def find_data_files(directory: str, pattern: str = '*.tdms',
     return sorted(files, key=lambda x: x.stat().st_mtime)
 
 
+# ---------------------------------------------------------------------------
+# Run-directory index: manifest.json + metadata-first file discovery
+# ---------------------------------------------------------------------------
+
+# Extensions a run file can have. manifest.json is an INDEX, not a run
+# file, and must never reach a reader — no pattern here matches it.
+RUN_FILE_PATTERNS = ('*.tdms', '*.h5', '*.hdf5', '*.mat')
+
+MANIFEST_FILENAME = 'manifest.json'
+MANIFEST_SCHEMA_VERSION = 1
+
+
+def find_run_files(directory: str, recursive: bool = False) -> list:
+    """
+    Every run file in a directory, in sorted path order.
+
+    Parameters
+    ----------
+    directory : str
+        Directory to search
+    recursive : bool
+        Whether to search subdirectories
+
+    Returns
+    -------
+    list
+        List of Path objects, excluding ``manifest.json`` (an index, not
+        a run file).
+    """
+    data_dir = Path(directory)
+    files = sorted(f for pat in RUN_FILE_PATTERNS
+                   for f in (data_dir.rglob(pat) if recursive
+                             else data_dir.glob(pat)))
+    return [f for f in files if f.name.lower() != MANIFEST_FILENAME]
+
+
+def read_run_manifest(directory: str) -> Dict[str, Any]:
+    """
+    Read the ``manifest.json`` index a run directory may carry.
+
+    Freestream writes one manifest per config directory, alongside the
+    run files, listing every point in ACQUISITION order::
+
+        {"schema_version": 1, "config_name": ..., "output_format": ...,
+         "created": ..., "updated": ..., "config": {...},
+         "points": [{"run_number": 1, "filename": ..., "timestamp": ...,
+                     "alpha": ..., "beta": ..., "mach": ...,
+                     "speed_value": ..., "speed_unit": ...,
+                     "air_state": ..., "sweep_dir": ...}, ...]}
+
+    A missing, unreadable, wrong-schema or malformed manifest is NOT an
+    error: this returns ``{}`` and the caller falls back to per-file
+    metadata.
+
+    Parameters
+    ----------
+    directory : str
+        Directory holding the run files
+
+    Returns
+    -------
+    dict
+        The parsed manifest, or ``{}``.
+    """
+    path = Path(directory) / MANIFEST_FILENAME
+    if not path.is_file():
+        return {}
+
+    try:
+        with open(path, 'r', encoding='utf-8') as fh:
+            manifest = json.load(fh)
+    except (OSError, ValueError) as exc:
+        warnings.warn(f"Ignoring unreadable {MANIFEST_FILENAME} in "
+                      f"'{path.parent.name}': {type(exc).__name__}: {exc}")
+        return {}
+
+    if not isinstance(manifest, dict):
+        warnings.warn(f"Ignoring malformed {MANIFEST_FILENAME} in "
+                      f"'{path.parent.name}': expected a JSON object")
+        return {}
+    if manifest.get('schema_version') != MANIFEST_SCHEMA_VERSION:
+        warnings.warn(
+            f"Ignoring {MANIFEST_FILENAME} in '{path.parent.name}': "
+            f"schema_version {manifest.get('schema_version')!r}, "
+            f"expected {MANIFEST_SCHEMA_VERSION}")
+        return {}
+    if not isinstance(manifest.get('points'), list):
+        warnings.warn(f"Ignoring malformed {MANIFEST_FILENAME} in "
+                      f"'{path.parent.name}': 'points' is not a list")
+        return {}
+
+    return manifest
+
+
+def _file_info_from_manifest_point(path: Path, point: Dict[str, Any],
+                                   manifest: Dict[str, Any]) -> 'FileInfo':
+    """
+    Fill a point's :class:`FileInfo` from the manifest where the FILE is
+    silent.
+
+    Precedence is file metadata -> manifest -> filename: the point's own
+    record is the most specific, the manifest is next (it supplies
+    everything for a legacy or unreadable file), and the filename is the
+    last resort. A manifest value of ``null`` means genuinely unknown
+    and leaves the field as parsed.
+    """
+    info = parse_run_file(str(path))
+    meta = read_run_metadata(str(path))
+
+    if not _meta_str(meta, 'config_name'):
+        config_name = _meta_str(manifest, 'config_name')
+        if config_name:
+            info.configuration = config_name
+    if not _meta_str(meta, 'air_state'):
+        air_state = _normalize_air_state(point.get('air_state'))
+        if air_state is not None:
+            info.air_state = air_state
+    if _meta_float(meta, 'alpha') is None:
+        alpha = _meta_float(point, 'alpha')
+        if alpha is not None:
+            info.alpha = alpha
+    if _meta_float(meta, 'beta') is None:
+        beta = _meta_float(point, 'beta')
+        if beta is not None:
+            info.beta = beta
+    if _meta_float(meta, 'speed_value') is None:
+        speed = _meta_float(point, 'speed_value')
+        if speed is not None:
+            info.speed = speed
+    if not _meta_str(meta, 'speed_unit'):
+        speed_unit = _meta_str(point, 'speed_unit')
+        if speed_unit is not None:
+            info.speed_unit = speed_unit.lower()
+    if _meta_int(meta, 'run_number') is None:
+        run_number = _meta_int(point, 'run_number')
+        if run_number is not None:
+            info.run_number = run_number
+    if not _meta_str(meta, 'sweep_dir'):
+        sweep_dir = (_meta_str(point, 'sweep_dir') or '').lower()
+        if sweep_dir in ('up', 'dn'):
+            info.sweep_dir = sweep_dir
+
+    return info
+
+
+def scan_run_directory(directory: str,
+                       recursive: bool = False) -> Tuple[List['FileInfo'],
+                                                         List[str]]:
+    """
+    Index a run directory metadata-first, honoring ``manifest.json``.
+
+    When the directory carries a valid manifest it is the AUTHORITATIVE
+    index: it fixes the point count and the ACQUISITION order, and it
+    supplies per-point fields for files whose own metadata is missing.
+    Disagreements between the manifest and what is on disk are REPORTED
+    rather than silently resolved in favor of either side — files the
+    manifest does not list are appended after the listed ones, and
+    listed points with no file on disk are dropped from the index.
+
+    Without a manifest every run file is parsed with
+    :func:`parse_run_file` and returned in sorted path order.
+
+    Parameters
+    ----------
+    directory : str
+        Directory holding the run files
+    recursive : bool
+        Whether to search subdirectories
+
+    Returns
+    -------
+    tuple
+        ``(file_infos, mismatches)`` — the indexed points and a list of
+        human-readable mismatch messages (empty when consistent).
+    """
+    data_dir = Path(directory)
+    files = find_run_files(data_dir, recursive=recursive)
+    manifest = read_run_manifest(data_dir)
+    if not manifest:
+        return [parse_run_file(str(f)) for f in files], []
+
+    by_name = {f.name: f for f in files}
+    points = [p for p in manifest.get('points', []) if isinstance(p, dict)]
+
+    infos: List['FileInfo'] = []
+    listed = set()
+    missing: List[str] = []
+    for point in points:
+        name = str(point.get('filename') or '')
+        path = by_name.get(name)
+        if path is None:
+            missing.append(name or '<unnamed point>')
+            continue
+        listed.add(name)
+        infos.append(_file_info_from_manifest_point(path, point, manifest))
+
+    extra = [f for f in files if f.name not in listed]
+    infos.extend(parse_run_file(str(f)) for f in extra)
+
+    mismatches: List[str] = []
+    if len(points) != len(files):
+        mismatches.append(
+            f"{MANIFEST_FILENAME} lists {len(points)} point(s) but "
+            f"{len(files)} run file(s) are present")
+    if missing:
+        mismatches.append(
+            f"{len(missing)} manifest point(s) have no run file on disk: "
+            + ", ".join(missing[:5]) + (" ..." if len(missing) > 5 else ""))
+    if extra:
+        mismatches.append(
+            f"{len(extra)} run file(s) are not listed in "
+            f"{MANIFEST_FILENAME}: "
+            + ", ".join(f.name for f in extra[:5])
+            + (" ..." if len(extra) > 5 else ""))
+
+    for message in mismatches:
+        warnings.warn(f"{data_dir.name}: {message}")
+
+    return infos, mismatches
+
+
+def read_run_config(directory: str) -> Dict[str, Any]:
+    """
+    The measurement config recorded for a run directory.
+
+    Prefers the ``config`` block of ``manifest.json`` (one small read),
+    falling back to the first run file that carries a
+    ``meta.config_json``.
+
+    Parameters
+    ----------
+    directory : str
+        Directory holding the run files
+
+    Returns
+    -------
+    dict
+        The recorded config, or ``{}`` for a legacy directory that
+        records none.
+    """
+    config = read_run_manifest(directory).get('config')
+    if isinstance(config, dict) and config:
+        return config
+
+    for f in find_run_files(directory):
+        config = read_run_metadata(str(f)).get('config')
+        if isinstance(config, dict) and config:
+            return config
+
+    return {}
+
+
+# Reference-dimension config keys, in preference order, paired with the
+# model-geometry field each seeds. Freestream's config carries TWO
+# overlapping sets (Sref/cref/bref and ref_area/ref_chord/ref_span) and in
+# a real run one set holds 0.0 while the other holds the 1.0 placeholders,
+# so the VALUE decides which is real, not the key.
+_REFERENCE_CONFIG_KEYS = (
+    ('ref_area', ('Sref', 'ref_area')),
+    ('mac', ('cref', 'ref_chord')),
+    ('span', ('bref', 'ref_span')),
+)
+
+# A reference dimension of exactly 1.0 is the unset placeholder; seeding
+# it would pass a placeholder off as a measured dimension.
+_REFERENCE_PLACEHOLDER = 1.0
+
+
+def reference_geometry_from_config(config: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Model geometry and balance settings a recorded config can SEED.
+
+    Only genuinely recorded values come back: a reference dimension is
+    taken when it is finite, nonzero and not the 1.0 placeholder, and the
+    MRC only when at least one component is nonzero. Anything the config
+    does not really carry is OMITTED so the caller leaves the operator's
+    current value alone — a silently substituted 1.0 is indistinguishable
+    from a real reference dimension once it reaches the reduction.
+
+    Parameters
+    ----------
+    config : dict
+        A parsed ``meta.config_json`` / manifest ``config`` block
+
+    Returns
+    -------
+    dict
+        Any of ``'ref_area'``, ``'mac'``, ``'span'`` (floats), ``'mrc'``
+        (3-list) and ``'balance_config'`` ('Force' or 'Moment').
+    """
+    seed: Dict[str, Any] = {}
+    if not isinstance(config, dict):
+        return seed
+
+    for geo_key, config_keys in _REFERENCE_CONFIG_KEYS:
+        for config_key in config_keys:
+            value = _meta_float(config, config_key)
+            if (value is not None and abs(value) > 1e-12
+                    and value != _REFERENCE_PLACEHOLDER):
+                seed[geo_key] = value
+                break
+
+    mrc = [_meta_float(config, f'MRC_{axis}') or 0.0
+           for axis in ('x', 'y', 'z')]
+    if any(abs(v) > 1e-12 for v in mrc):
+        seed['mrc'] = mrc
+
+    balance_config = (_meta_str(config, 'balance_config') or '').lower()
+    if balance_config in ('force', 'moment'):
+        seed['balance_config'] = balance_config.capitalize()
+
+    return seed
+
+
 def speed_condition_key(value: float, unit: Optional[str]) -> str:
     """
     Build the per-condition dict key for a (value, unit) speed setting.
@@ -1025,19 +1547,22 @@ def classify_files_by_condition(files: list) -> Dict[str, list]:
     """
     Classify data files by test condition, keyed by the speed dimension.
 
-    Legacy TDMS runs carry an explicit ``AirOn``/``AirOff`` substring in
-    the filename and are classified by that (unchanged). Newer Freestream
-    runs drop that token and instead encode the condition in the speed
-    setting: the filename ``{Hz|ftps|mps|RPM|mach}_<value>`` token (or the
-    legacy ``mach`` token). A zero speed (``Hz_0.0`` / ``mach_0.00``) is a
-    tare/air-off point; any nonzero speed is air-on.
+    The air state comes from :func:`parse_run_file`, i.e. from
+    ``meta.run.air_state`` when the file records it and from the filename
+    otherwise. That distinction matters: a tare taken with the fan
+    RUNNING is an air-off point at a nonzero speed, which the old
+    speed-only inference misclassified as air-on. Legacy TDMS runs carry
+    an explicit ``AirOn``/``AirOff`` substring and Freestream runs
+    without metadata encode the condition in the
+    ``{Hz|ftps|mps|RPM|mach}_<value>`` token (speed 0 -> tare/air-off);
+    both still work, unchanged.
 
-    The returned dict always carries the ``'AirOn'`` / ``'AirOff'`` keys
-    (``'AirOn'`` collects every nonzero-speed file). In addition, each
-    distinct nonzero speed gets its own condition key (e.g. ``'Hz_30.0'``)
-    listing just that speed's files, so a velocity sweep surfaces as its
-    distinct speeds rather than a single collapsed condition. Files with
-    no cue at all are left unclassified.
+    The returned dict always carries the ``'AirOn'`` / ``'AirOff'`` keys.
+    In addition, each distinct nonzero speed of an air-on file gets its
+    own condition key (e.g. ``'Hz_30.0'``) listing just that speed's
+    files, so a velocity sweep surfaces as its distinct speeds rather
+    than a single collapsed condition. Files with no cue at all are left
+    unclassified.
 
     Parameters
     ----------
@@ -1053,26 +1578,21 @@ def classify_files_by_condition(files: list) -> Dict[str, list]:
     classified: Dict[str, list] = {'AirOn': [], 'AirOff': []}
 
     for f in files:
-        fname = str(f).lower()
-        if 'airoff' in fname:                       # legacy token wins first
+        info = parse_run_file(str(f))
+        if info.air_state == 'AirOff':
             classified['AirOff'].append(f)
             continue
-        if 'airon' in fname:
-            classified['AirOn'].append(f)
-            continue
+        if info.air_state != 'AirOn':
+            continue                                # no cue at all -> skip
 
-        value, unit = extract_speed_from_filename(str(f))
+        classified['AirOn'].append(f)
+
+        value, unit = info.speed, info.speed_unit
         if value is None:                           # fall back to bare mach
             mach = extract_mach_from_filename(str(f))
             if mach is not None:
                 value, unit = mach, 'mach'
-        if value is None:
-            continue                                # neither cue -> skip
-
-        if abs(value) < 1e-6:                       # speed 0 -> air off/tare
-            classified['AirOff'].append(f)
-        else:
-            classified['AirOn'].append(f)
+        if value is not None and abs(value) > 1e-6:
             # A distinct nonzero speed is its own condition
             classified.setdefault(speed_condition_key(value, unit),
                                   []).append(f)
@@ -1241,25 +1761,88 @@ def extract_air_state_from_filename(filepath: str) -> str:
     return 'Unknown'
 
 
+def extract_run_number_from_filename(filepath: str) -> Optional[int]:
+    """
+    Extract the acquisition run number from a ``run_<NNNN>`` filename token.
+
+    Expected format: ``run_0006_alpha_2.0_beta_0.0_Hz_20.0.mat`` -> 6.
+
+    Parameters
+    ----------
+    filepath : str
+        File path to parse
+
+    Returns
+    -------
+    int or None
+        The parsed run number, or None when no ``run_`` token leads the
+        filename.
+    """
+    import re
+
+    filename = Path(filepath).stem
+    match = re.match(r'^run[_\s]*(\d+)', filename, re.IGNORECASE)
+    return int(match.group(1)) if match else None
+
+
+def extract_sweep_dir_from_filename(filepath: str) -> str:
+    """
+    Extract the hysteresis leg from a trailing ``_up`` / ``_dn`` token.
+
+    Freestream tags the RETURN leg of a hysteresis sweep so the up and
+    down legs stay separable downstream.
+
+    Parameters
+    ----------
+    filepath : str
+        File path to parse
+
+    Returns
+    -------
+    str
+        'up', 'dn', or '' when the filename carries no leg token.
+    """
+    import re
+
+    filename = Path(filepath).stem
+    match = re.search(r'_(up|dn)$', filename, re.IGNORECASE)
+    return match.group(1).lower() if match else ''
+
+
 @dataclass
 class FileInfo:
-    """Information extracted from a TDMS filename."""
+    """Information about a single run file.
+
+    Read from the file's own metadata when it records any (see
+    :func:`parse_run_file`), and parsed from the filename otherwise (see
+    :func:`parse_tdms_filename`, the legacy TDMS path).
+    """
     filepath: Path
     configuration: str
     air_state: str
     alpha: float
     beta: float
-    # The tunnel-speed SETPOINT parsed from the filename token (the TARGET
-    # value — bulletproof for grouping, since measured speed can jitter or
-    # collapse). ``speed`` is None when no speed token is present; ``speed_unit``
-    # is one of 'hz'/'ft/s'/'m/s'/'rpm'/'mach'.
+    # The tunnel-speed SETPOINT (the TARGET value — bulletproof for
+    # grouping, since measured speed can jitter or collapse), from
+    # meta.run.speed_value or the filename token. ``speed`` is None when
+    # neither is present; ``speed_unit`` is one of
+    # 'hz'/'ft/s'/'m/s'/'rpm'/'mach'.
     speed: Optional[float] = None
     speed_unit: Optional[str] = None
+    # Acquisition run number (meta.run.run_number, else the run_<NNNN>
+    # filename token); None when the file carries neither.
+    run_number: Optional[int] = None
+    # Hysteresis leg: 'up' / 'dn' on a return-sweep point, '' otherwise.
+    sweep_dir: str = ""
 
 
 def parse_tdms_filename(filepath: str) -> FileInfo:
     """
     Parse all information from a TDMS filename.
+
+    The legacy filename-only path, kept for TDMS runs that carry no
+    in-file metadata. New callers want :func:`parse_run_file`, which
+    reads the file's own record first and falls back to this.
 
     Parameters
     ----------
@@ -1285,6 +1868,92 @@ def parse_tdms_filename(filepath: str) -> FileInfo:
         beta=beta,
         speed=speed,
         speed_unit=speed_unit,
+        run_number=extract_run_number_from_filename(str(filepath)),
+        sweep_dir=extract_sweep_dir_from_filename(str(filepath)),
+    )
+
+
+def parse_run_file(filepath: str) -> FileInfo:
+    """
+    Parse a run file METADATA-FIRST, falling back to the filename per FIELD.
+
+    The file itself authoritatively records what the filename only
+    encodes, so each field is taken from the ``meta.run`` attribute that
+    :func:`read_run_metadata` returns, and from the matching
+    ``extract_*_from_filename`` parser when that key is absent:
+
+    * configuration <- ``config_name``
+    * air_state     <- ``air_state``
+    * alpha / beta  <- ``alpha`` / ``beta``
+    * speed / unit  <- ``speed_value`` / ``speed_unit``
+    * run_number    <- ``run_number``
+    * sweep_dir     <- ``sweep_dir``
+
+    Legacy TDMS runs carry no metadata at all and so behave exactly as
+    they did. For a Freestream run the difference is substantive: the
+    recorded air state no longer misreads a fan-running tare as an
+    air-on point, and ``config_name`` separates two model configurations
+    recorded into one folder — which the ``run_<NNNN>`` filename counter
+    cannot do, since it collapses every run to 'Unknown'.
+
+    Parameters
+    ----------
+    filepath : str
+        Path to the run file
+
+    Returns
+    -------
+    FileInfo
+        Parsed file information
+    """
+    filepath = Path(filepath)
+    meta = read_run_metadata(str(filepath))
+
+    configuration = _meta_str(meta, 'config_name')
+    if configuration is None:
+        configuration = extract_configuration_from_filename(str(filepath))
+
+    air_state = _normalize_air_state(meta.get('air_state'))
+    if air_state is None:
+        air_state = extract_air_state_from_filename(str(filepath))
+
+    alpha = _meta_float(meta, 'alpha')
+    beta = _meta_float(meta, 'beta')
+    if alpha is None or beta is None:
+        file_alpha, file_beta = extract_alpha_beta_from_filename(str(filepath))
+        alpha = file_alpha if alpha is None else alpha
+        beta = file_beta if beta is None else beta
+
+    speed = _meta_float(meta, 'speed_value')
+    speed_unit = _meta_str(meta, 'speed_unit')
+    if speed is None or speed_unit is None:
+        file_speed, file_unit = extract_speed_from_filename(str(filepath))
+        speed = file_speed if speed is None else speed
+        speed_unit = file_unit if speed_unit is None else speed_unit
+    if speed_unit is not None:
+        speed_unit = speed_unit.lower()
+
+    run_number = _meta_int(meta, 'run_number')
+    if run_number is None:
+        run_number = extract_run_number_from_filename(str(filepath))
+
+    sweep_dir = _meta_str(meta, 'sweep_dir')
+    if sweep_dir is None:
+        sweep_dir = extract_sweep_dir_from_filename(str(filepath))
+    sweep_dir = sweep_dir.lower()
+    if sweep_dir not in ('up', 'dn'):
+        sweep_dir = ''
+
+    return FileInfo(
+        filepath=filepath,
+        configuration=configuration,
+        air_state=air_state,
+        alpha=alpha,
+        beta=beta,
+        speed=speed,
+        speed_unit=speed_unit,
+        run_number=run_number,
+        sweep_dir=sweep_dir,
     )
 
 
@@ -1301,6 +1970,11 @@ def group_files_by_configuration(files: list) -> Dict[str, Dict[str, list]]:
     """
     Group run files by configuration and air state.
 
+    Each file is indexed with :func:`parse_run_file`, so the
+    configuration comes from ``meta.run.config_name`` when the file
+    records one: two model configurations recorded into a single folder
+    separate correctly instead of collapsing into one 'Unknown' group.
+
     A velocity/Mach sweep records every speed step into ONE folder. ALL of a
     configuration's speed steps stay in a SINGLE group (one case): the speed
     steps are kept DISTINCT downstream as separate Mach values (per-point,
@@ -1315,7 +1989,9 @@ def group_files_by_configuration(files: list) -> Dict[str, Dict[str, list]]:
     Parameters
     ----------
     files : list
-        List of file paths
+        List of file paths, or of already-parsed :class:`FileInfo`
+        objects (as :func:`scan_run_directory` returns, so a
+        manifest-indexed directory is not re-parsed here)
 
     Returns
     -------
@@ -1325,10 +2001,10 @@ def group_files_by_configuration(files: list) -> Dict[str, Dict[str, list]]:
     """
     grouped: Dict[str, Dict[str, list]] = {}
     for f in files:
-        info = parse_tdms_filename(str(f))
+        info = f if isinstance(f, FileInfo) else parse_run_file(str(f))
         cfg = grouped.setdefault(
             info.configuration, {'AirOn': [], 'AirOff': [], 'Unknown': []})
-        cfg[info.air_state].append(info)
+        cfg.setdefault(info.air_state, []).append(info)
 
     # Sort files within each group by alpha, then beta, then speed setpoint.
     for config in grouped:

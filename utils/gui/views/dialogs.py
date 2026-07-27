@@ -17,8 +17,8 @@ from PyQt6.QtWidgets import (
     QListWidget, QListWidgetItem, QFileDialog, QAbstractItemView,
     QTreeView, QListView, QCheckBox, QGridLayout
 )
-from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFont
+from PyQt6.QtCore import Qt, QDir
+from PyQt6.QtGui import QFont, QFileSystemModel
 
 from ..utils.themes import DarkTheme
 from ..utils.icons import Icons
@@ -1377,20 +1377,37 @@ class MultiDirectoryDialog(QDialog):
     Dialog for selecting multiple directories.
 
     Supports:
-    - Multi-select with Shift+click or Ctrl+click in the file browser
+    - A persistent root directory that the browser tree is anchored to
+    - A live file-system tree (directories only) below that root
+    - Multi-select with Shift+click or Ctrl+click in the tree
     - Adding directories one at a time
     - Removing selected directories from the list
     """
 
-    def __init__(self, parent=None, initial_dir: str = ""):
+    def __init__(self, parent=None, initial_dir: str = "", settings=None):
         super().__init__(parent)
         self.setWindowTitle("Select Data Directories")
-        self.setMinimumSize(600, 500)
+        self.setMinimumSize(650, 620)
 
+        self.settings = settings
         self._initial_dir = initial_dir
         self._directories: List[str] = []
 
+        # Persisted root wins, then the caller's directory, then the home folder
+        root = settings.data_root_directory if settings is not None else ""
+        for candidate in (root, initial_dir, QDir.homePath()):
+            if candidate and Path(candidate).is_dir():
+                root = candidate
+                break
+        self._root = self._normalize(root)
+
         self._setup_ui()
+        self._set_root(self._root)
+
+    @staticmethod
+    def _normalize(path: str) -> str:
+        """Normalize a path so tree and file-dialog entries compare equal."""
+        return str(Path(path)) if path else ""
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
@@ -1398,11 +1415,74 @@ class MultiDirectoryDialog(QDialog):
 
         # Instructions
         instructions = QLabel(
-            "Select directories containing TDMS data files.\n"
+            "Pick a root directory, then select the data directories beneath it.\n"
             "Use Ctrl+click or Shift+click to select multiple directories at once."
         )
         instructions.setStyleSheet(f"color: {DarkTheme.TEXT_SECONDARY}; font-size: 10pt;")
         layout.addWidget(instructions)
+
+        # Root directory
+        root_layout = QHBoxLayout()
+
+        lbl_root = QLabel("Root:")
+        lbl_root.setFixedWidth(40)
+        root_layout.addWidget(lbl_root)
+
+        self.txt_root = QLineEdit()
+        self.txt_root.setReadOnly(True)
+        self.txt_root.setPlaceholderText("No root directory selected")
+        root_layout.addWidget(self.txt_root)
+
+        self.btn_browse_root = QPushButton("Browse...")
+        self.btn_browse_root.setIcon(Icons.folder_open())
+        self.btn_browse_root.setToolTip("Choose the root directory for the tree below")
+        self.btn_browse_root.clicked.connect(self._browse_root)
+        root_layout.addWidget(self.btn_browse_root)
+
+        layout.addLayout(root_layout)
+
+        # Directory tree
+        tree_group = QGroupBox("Directory Tree")
+        tree_layout = QVBoxLayout(tree_group)
+
+        self.fs_model = QFileSystemModel()
+        self.fs_model.setFilter(QDir.Filter.Dirs | QDir.Filter.NoDotAndDotDot)
+
+        self.tree = QTreeView()
+        self.tree.setModel(self.fs_model)
+        self.tree.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.tree.setExpandsOnDoubleClick(True)
+        self.tree.setHeaderHidden(False)
+        self.tree.setStyleSheet(f"""
+            QTreeView {{
+                background-color: {DarkTheme.BACKGROUND};
+                border: 1px solid {DarkTheme.BORDER};
+                border-radius: 4px;
+            }}
+            QTreeView::item {{
+                padding: 3px;
+            }}
+            QTreeView::item:selected {{
+                background-color: {DarkTheme.SELECTION};
+            }}
+        """)
+        # Only the name column is useful for directory picking
+        for column in (1, 2, 3):
+            self.tree.hideColumn(column)
+        tree_layout.addWidget(self.tree)
+
+        tree_btn_layout = QHBoxLayout()
+
+        self.btn_add_selected = QPushButton("Add Selected")
+        self.btn_add_selected.setIcon(Icons.add())
+        self.btn_add_selected.setToolTip("Add the directories selected in the tree")
+        self.btn_add_selected.clicked.connect(self._add_selected_from_tree)
+        tree_btn_layout.addWidget(self.btn_add_selected)
+
+        tree_btn_layout.addStretch()
+        tree_layout.addLayout(tree_btn_layout)
+
+        layout.addWidget(tree_group, stretch=2)
 
         # Scan subfolders checkbox
         self.chk_recursive = QCheckBox("Scan subfolders")
@@ -1435,20 +1515,17 @@ class MultiDirectoryDialog(QDialog):
         # Buttons for list management
         btn_layout = QHBoxLayout()
 
-        self.btn_browse = QPushButton("Browse... (Multi-select)")
-        self.btn_browse.setIcon(Icons.folder_open())
-        self.btn_browse.setToolTip("Open browser to select multiple directories (Ctrl/Shift+click)")
-        self.btn_browse.clicked.connect(self._browse_directories)
-        btn_layout.addWidget(self.btn_browse)
-
-        self.btn_add = QPushButton("Add Single...")
+        self.btn_add = QPushButton()
         self.btn_add.setIcon(Icons.add())
         self.btn_add.setToolTip("Add a single directory")
+        self.btn_add.setFixedSize(28, 28)
         self.btn_add.clicked.connect(self._add_single_directory)
         btn_layout.addWidget(self.btn_add)
 
-        self.btn_remove = QPushButton("Remove")
+        self.btn_remove = QPushButton()
         self.btn_remove.setIcon(Icons.delete())
+        self.btn_remove.setToolTip("Remove the highlighted directories")
+        self.btn_remove.setFixedSize(28, 28)
         self.btn_remove.clicked.connect(self._remove_selected)
         btn_layout.addWidget(self.btn_remove)
 
@@ -1459,7 +1536,7 @@ class MultiDirectoryDialog(QDialog):
         btn_layout.addStretch()
         list_layout.addLayout(btn_layout)
 
-        layout.addWidget(list_group)
+        layout.addWidget(list_group, stretch=1)
 
         # Status label
         self.lbl_status = QLabel("No directories selected")
@@ -1479,21 +1556,58 @@ class MultiDirectoryDialog(QDialog):
 
         layout.addWidget(buttons)
 
-    def _browse_directories(self):
-        """Open multi-select directory browser."""
-        directories = get_multiple_directories(
-            self, "Select Data Directories", self._initial_dir
-        )
-        for directory in directories:
-            if directory and directory not in self._directories:
-                self._directories.append(directory)
-                self._initial_dir = str(Path(directory).parent)
+    def _set_root(self, directory: str):
+        """Re-root the file-system tree in place."""
+        directory = self._normalize(directory)
+        if not directory or not Path(directory).is_dir():
+            return
 
-                item = QListWidgetItem(directory)
-                item.setToolTip(directory)
-                self.dir_list.addItem(item)
+        self._root = directory
+        self._initial_dir = directory
+        self.txt_root.setText(directory)
+        self.txt_root.setToolTip(directory)
+
+        self.fs_model.setRootPath(directory)
+        self.tree.setRootIndex(self.fs_model.index(directory))
+        self.tree.clearSelection()
+
+    def _browse_root(self):
+        """Choose the root directory the tree is anchored to."""
+        directory = QFileDialog.getExistingDirectory(
+            self, "Select Root Directory",
+            self._root
+        )
+        if directory:
+            self._set_root(directory)
+
+    def _selected_tree_directories(self) -> List[str]:
+        """Directories currently selected in the tree, in view order."""
+        directories = []
+        for index in self.tree.selectionModel().selectedRows():
+            path = self._normalize(self.fs_model.filePath(index))
+            if path and path not in directories:
+                directories.append(path)
+        return directories
+
+    def _add_selected_from_tree(self):
+        """Add every directory selected in the tree to the list."""
+        for directory in self._selected_tree_directories():
+            self._add_directory(directory)
 
         self._update_status()
+
+    def _add_directory(self, directory: str) -> bool:
+        """Add one directory to the list, ignoring duplicates."""
+        directory = self._normalize(directory)
+        if not directory or directory in self._directories:
+            return False
+
+        self._directories.append(directory)
+
+        item = QListWidgetItem(directory)
+        item.setToolTip(directory)
+        self.dir_list.addItem(item)
+        return True
 
     def _add_single_directory(self):
         """Add a single directory to the list."""
@@ -1501,14 +1615,8 @@ class MultiDirectoryDialog(QDialog):
             self, "Select Data Directory",
             self._initial_dir
         )
-        if directory and directory not in self._directories:
-            self._directories.append(directory)
+        if directory and self._add_directory(directory):
             self._initial_dir = str(Path(directory).parent)
-
-            item = QListWidgetItem(directory)
-            item.setToolTip(directory)
-            self.dir_list.addItem(item)
-
             self._update_status()
 
     def _remove_selected(self):
@@ -1543,6 +1651,11 @@ class MultiDirectoryDialog(QDialog):
     def get_directories(self) -> List[str]:
         """Get the list of selected directories."""
         return self._directories.copy()
+
+    @property
+    def root_directory(self) -> str:
+        """Root directory the tree is anchored to."""
+        return self._root
 
     @property
     def recursive(self) -> bool:

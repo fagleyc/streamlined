@@ -87,6 +87,35 @@ def _parse_line(line: str) -> Tuple[Optional[str], Optional[str]]:
     return None, None
 
 
+def _cal_file_encoding(filepath: str) -> str:
+    """
+    Sniff the byte-order mark of a calibration file.
+
+    Parameters
+    ----------
+    filepath : str
+        Path to the calibration file
+
+    Returns
+    -------
+    str
+        Encoding name to open the file with
+
+    Notes
+    -----
+    Some calibration GUIs save .vol files as UTF-16; older files are
+    plain ASCII/ANSI, which latin-1 decodes without ever raising.
+    """
+    with open(filepath, 'rb') as f:
+        bom = f.read(4)
+
+    if bom.startswith(b'\xff\xfe') or bom.startswith(b'\xfe\xff'):
+        return 'utf-16'
+    if bom.startswith(b'\xef\xbb\xbf'):
+        return 'utf-8-sig'
+    return 'latin-1'
+
+
 def read_vol_file(filepath: str) -> BalanceCalibration:
     """
     Read a force balance voltage calibration file (.vol format).
@@ -114,7 +143,7 @@ def read_vol_file(filepath: str) -> BalanceCalibration:
 
     channel_data = []  # List of (multiplier, channel, nloads, data)
 
-    with open(filepath, 'r') as f:
+    with open(filepath, 'r', encoding=_cal_file_encoding(filepath)) as f:
         current_field = 'Info'
         in_header = True
 
@@ -145,11 +174,14 @@ def read_vol_file(filepath: str) -> BalanceCalibration:
                     # Skip header line
                     next(f)
 
-                    # Read data lines
+                    # Read data lines.  Most .vol files are comma
+                    # delimited, but the MATLAB cal GUI writes tab
+                    # delimited columns, so accept either separator.
                     data = []
                     for _ in range(nloads):
                         data_line = next(f).strip()
-                        values = [float(v) for v in data_line.split(',')]
+                        values = [float(v) for v in
+                                  re.split(r'[,\s]+', data_line) if v]
                         data.append(values)
 
                     channel_data.append({
@@ -191,6 +223,14 @@ def read_vol_file(filepath: str) -> BalanceCalibration:
                 key, value = _parse_line(line)
                 if key:
                     cal.distances.values[key] = float(value)
+
+    # A file with no force/voltage sections cannot calibrate anything;
+    # fail loudly instead of returning an empty calibration that would
+    # be mistaken for a valid one downstream.
+    if not channel_data:
+        raise ValueError(
+            f"No force/voltage sections found in '{filepath}'. The file "
+            "may be corrupt or not a .vol calibration file.")
 
     # Process channel data into Force and Volts matrices
     if channel_data:

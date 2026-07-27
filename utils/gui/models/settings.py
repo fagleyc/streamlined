@@ -53,6 +53,15 @@ class AppSettings:
         self._settings.setValue("paths/last_data_dir", path)
 
     @property
+    def data_root_directory(self) -> str:
+        """Root directory the multi-directory tree browser starts from."""
+        return self._settings.value("paths/data_root_dir", "")
+
+    @data_root_directory.setter
+    def data_root_directory(self, path: str):
+        self._settings.setValue("paths/data_root_dir", path)
+
+    @property
     def last_calibration_directory(self) -> str:
         return self._settings.value("paths/last_cal_dir", "")
 
