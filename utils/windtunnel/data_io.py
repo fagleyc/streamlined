@@ -1308,6 +1308,68 @@ def read_run_manifest(directory: str) -> Dict[str, Any]:
     return manifest
 
 
+def find_run_balance_cal(directory: str) -> Dict[str, Any]:
+    """
+    Resolve the run-local balance calibration a run directory carries.
+
+    Freestream copies the active balance ``.vol`` into the run directory
+    at run start and records the hand-off in ``manifest.json`` as a
+    top-level ``"balance_cal"`` object::
+
+        {"balance_cal": {"vol_file": "50lb 2026_07_24.vol",
+                         "vol_source": "C:/.../CalFiles/...",
+                         "cal_type": "Linear", "balance_config": "Moment",
+                         "balance_type": "internal",
+                         "balance_serial": "..."}, ...}
+
+    Resolution order:
+
+    1. the manifest's ``balance_cal.vol_file`` when that file exists in
+       the directory (its recorded ``cal_type`` etc. ride along);
+    2. else the directory's SINGLE ``*.vol`` file (``cal_type`` falls
+       back to the manifest ``config`` block when one is recorded).
+
+    Two or more ``.vol`` files with no manifest entry are ambiguous and
+    resolve to nothing — never guess a calibration.
+
+    Parameters
+    ----------
+    directory : str
+        Directory holding the run files
+
+    Returns
+    -------
+    dict
+        ``{'vol_path': str, 'cal_type': str, ...}`` with the balance
+        metadata recorded for the run, or ``{}`` when the directory
+        carries no unambiguous run-local calibration.
+    """
+    data_dir = Path(directory)
+    manifest = read_run_manifest(data_dir)
+
+    entry = manifest.get('balance_cal')
+    if isinstance(entry, dict):
+        name = str(entry.get('vol_file') or '')
+        path = data_dir / name if name else None
+        if path is not None and path.is_file():
+            resolved = {k: v for k, v in entry.items()
+                        if k != 'vol_file' and v not in (None, '')}
+            resolved['vol_path'] = str(path)
+            return resolved
+
+    vols = sorted(data_dir.glob('*.vol'))
+    if len(vols) != 1:
+        return {}
+    config = manifest.get('config')
+    cal_type = ''
+    if isinstance(config, dict):
+        cal_type = str(config.get('cal_type') or '')
+    resolved = {'vol_path': str(vols[0])}
+    if cal_type:
+        resolved['cal_type'] = cal_type
+    return resolved
+
+
 def _file_info_from_manifest_point(path: Path, point: Dict[str, Any],
                                    manifest: Dict[str, Any]) -> 'FileInfo':
     """

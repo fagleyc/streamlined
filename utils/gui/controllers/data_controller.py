@@ -30,7 +30,7 @@ try:
         extract_alpha_beta_from_filename, read_run_file,
         copy_balance_markers, FileInfo,
         parse_run_file, scan_run_directory, read_run_config,
-        reference_geometry_from_config
+        reference_geometry_from_config, find_run_balance_cal
     )
     from utils.windtunnel.transforms import is_external_balance_data
     BACKEND_AVAILABLE = True
@@ -359,6 +359,27 @@ class ProcessingWorker(QRunnable):
                 alphas, betas, n_alpha, n_beta, index
             )
 
+    def _run_local_balance_cal(self, file_infos):
+        """Build a BalanceCalibration from the .vol freestream copied into
+        the run directory at run start (resolved via the manifest's
+        'balance_cal' entry, else the directory's single *.vol — see
+        find_run_balance_cal), or None when the directory carries no
+        unambiguous run-local cal or it fails to parse."""
+        if not BACKEND_AVAILABLE or not file_infos:
+            return None
+        try:
+            resolved = find_run_balance_cal(
+                str(Path(file_infos[0].filepath).parent))
+            if not resolved:
+                return None
+            cal = read_vol_file(resolved['vol_path'])
+            if not cal:
+                return None
+            return calc_coeffs(cal, resolved.get('cal_type')
+                               or self.settings.get('cal_type', 'Linear'))
+        except Exception:
+            return None
+
     def _injected_balance_cal(self, file_infos):
         """Build a BalanceCalibration from the matrix freestream injected into
         the run files (peek the first file's /meta/devices/<balance>), or None
@@ -414,9 +435,12 @@ class ProcessingWorker(QRunnable):
             # Balance calibration precedence:
             #   1. an explicitly loaded .vol OVERRIDES everything (reprocess
             #      with a different balance cal on demand),
-            #   2. else the calibration MATRIX freestream injected into the
+            #   2. else the run-local .vol freestream copied into the run
+            #      directory at run start (manifest 'balance_cal' entry, or
+            #      the directory's single *.vol),
+            #   3. else the calibration MATRIX freestream injected into the
             #      run files (no .vol needed),
-            #   3. else none — internal data then fails with a reported
+            #   4. else none — internal data then fails with a reported
             #      error; an external (ATE) balance needs no balance cal.
             if self.balance_cal:
                 daq.cal = self.balance_cal
@@ -424,10 +448,15 @@ class ProcessingWorker(QRunnable):
                 daq.cal_balance(self.balance_cal_file,
                                 self.settings.get('cal_type', 'Linear'))
             else:
-                injected = self._injected_balance_cal(
+                run_local = self._run_local_balance_cal(
                     air_on_files or air_off_files)
-                if injected is not None:
-                    daq.cal = injected
+                if run_local is not None:
+                    daq.cal = run_local
+                else:
+                    injected = self._injected_balance_cal(
+                        air_on_files or air_off_files)
+                    if injected is not None:
+                        daq.cal = injected
 
             # Pressure calibration (.pcf) removed — tunnel pressure/temp cal is
             # injected into the run files and applied by the reduction.
