@@ -1436,12 +1436,16 @@ class TablePanel(QWidget):
     def _config_wants_unsteady(config: Optional[dict]) -> bool:
         """Whether an ExportDialog config asks for time-series data.
 
-        The dialog exposes the coefficient and tunnel time-series as
-        separate options; either one requires the unsteady sub-group.
-        Defaults to False when no config was supplied.
+        The dialog exposes a single 'Include all unsteady (time-series)
+        data' checkbox.  Older configs used separate
+        include_coefficients_ts / include_tunnel_ts flags; honor those
+        too for backward compatibility.  Defaults to False when no
+        config was supplied.
         """
         if not config:
             return False
+        if 'include_unsteady' in config:
+            return bool(config.get('include_unsteady'))
         return bool(config.get('include_coefficients_ts')
                     or config.get('include_tunnel_ts'))
 
