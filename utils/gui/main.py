@@ -122,6 +122,11 @@ class WindTunnelApp:
         self.main_window.data_panel.balance_cal_requested.connect(
             self._on_balance_cal_requested
         )
+        # an external balance has no bridge volts, so the .vol input is
+        # greyed out as soon as the loaded runs say so
+        self.data_controller.balance_type_detected.connect(
+            self.main_window.data_panel.set_balance_type
+        )
         self.main_window.data_panel.process_requested.connect(
             self.controller.process_data
         )

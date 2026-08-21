@@ -2076,3 +2076,36 @@ def group_files_by_configuration(files: list) -> Dict[str, Dict[str, list]]:
                                x.speed if x.speed is not None else 0.0))
 
     return grouped
+
+
+def run_balance_type(directory: str) -> str:
+    """Balance type recorded by the runs in a directory.
+
+    Returns ``'external'`` when the runs carry resolved loads from an
+    external balance (the ATE), ``'internal'`` when they carry bridge
+    volts needing a ``.vol``, or ``''`` when nothing says.
+
+    Freestream stamps ``balance_type`` into every run file's root
+    metadata, and the directory manifest repeats it when a calibration
+    was staged. Metadata is read without unpacking channel arrays, and
+    the first file that answers wins: a directory mixing balance types
+    is not a thing.
+    """
+    try:
+        manifest = read_run_manifest(directory)
+    except Exception:                                  # noqa: BLE001
+        manifest = {}
+    entry = (manifest or {}).get('balance_cal') or {}
+    btype = str(entry.get('balance_type') or '').strip().lower()
+    if btype in ('external', 'internal'):
+        return btype
+
+    for path in find_run_files(directory)[:8]:
+        try:
+            meta = read_run_metadata(str(path))
+        except Exception:                              # noqa: BLE001
+            continue
+        btype = str(meta.get('balance_type') or '').strip().lower()
+        if btype in ('external', 'internal'):
+            return btype
+    return ''

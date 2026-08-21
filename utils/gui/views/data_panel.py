@@ -89,6 +89,29 @@ class CalibrationSection(QFrame):
             self.txt_balance.setText(Path(filepath).name)
             self.balance_loaded.emit(filepath)
 
+    def set_external_mode(self, external: bool):
+        """Disable the .vol input for an external balance.
+
+        An external balance streams resolved loads in engineering
+        units, so there is no bridge-volts calibration to load. Greying
+        the control says that plainly instead of leaving an input that
+        cannot help.
+        """
+        self.btn_balance.setEnabled(not external)
+        self.txt_balance.setEnabled(not external)
+        if external:
+            self.txt_balance.setPlaceholderText(
+                "not required — external balance")
+            self.btn_balance.setToolTip(
+                "External balance: loads arrive already resolved, so no "
+                ".vol calibration applies")
+            self.lbl_status.setText(
+                "External balance — no .vol required")
+        else:
+            self.txt_balance.setPlaceholderText("No file loaded")
+            self.btn_balance.setToolTip(
+                "Load balance calibration (.vol)")
+
     def set_balance_file(self, filepath: str):
         """Set the balance file display."""
         self.txt_balance.setText(Path(filepath).name if filepath else "")
@@ -220,6 +243,11 @@ class DataPanel(QWidget):
     def _connect_signals(self):
         """Connect internal signals."""
         self.cal_section.balance_loaded.connect(self.balance_cal_requested.emit)
+
+    def set_balance_type(self, balance_type: str):
+        """Route a detected run balance type to the calibration panel."""
+        self.cal_section.set_external_mode(
+            str(balance_type).lower() == "external")
 
         # Model signals
         self.model.cases_changed.connect(self._update_case_list)

@@ -30,7 +30,8 @@ try:
         extract_alpha_beta_from_filename, read_run_file,
         copy_balance_markers, FileInfo,
         parse_run_file, scan_run_directory, read_run_config,
-        reference_geometry_from_config, find_run_balance_cal
+        reference_geometry_from_config, find_run_balance_cal,
+        run_balance_type
     )
     from utils.windtunnel.transforms import is_external_balance_data
     BACKEND_AVAILABLE = True
@@ -852,6 +853,10 @@ class DataController(QObject):
     status_changed = pyqtSignal(str)
     error_occurred = pyqtSignal(str, str)
     config_loaded = pyqtSignal(str)  # Config file path
+    #: 'external' | 'internal' | '' — emitted when a data directory is
+    #: loaded so the calibration panel can disable the .vol input for a
+    #: balance that has no bridge volts to calibrate
+    balance_type_detected = pyqtSignal(str)
 
     def __init__(self, model: DataModel, settings: AppSettings):
         super().__init__()
@@ -860,6 +865,9 @@ class DataController(QObject):
 
         self._balance_cal = None
         self._balance_cal_file = None
+        #: balance type of the loaded runs; 'external' means resolved
+        #: loads and no .vol requirement
+        self._run_balance_type = ""
         self._pressure_cal = None
         self._pressure_cal_file = None
         self._current_worker = None
@@ -1054,8 +1062,15 @@ class DataController(QObject):
         # already wrote into every file.
         self._seed_config_from_run_files(valid_dirs)
 
-        # Balance calibration is required to compute forces
-        if not self._balance_cal and not self._balance_cal_file:
+        # Balance calibration is required to compute forces from BRIDGE
+        # VOLTS. An external balance (the ATE) streams resolved loads in
+        # engineering units, so there is nothing for a .vol to calibrate
+        # and demanding one blocks a perfectly reducible run.
+        if self._run_balance_type == 'external':
+            self.status_changed.emit(
+                "External balance detected — resolved loads, no balance "
+                "calibration required")
+        elif not self._balance_cal and not self._balance_cal_file:
             self.error_occurred.emit(
                 "No Balance Calibration",
                 "Load a balance calibration (.vol) file before processing data.\n\n"
@@ -1154,6 +1169,20 @@ class DataController(QObject):
         """
         if not BACKEND_AVAILABLE:
             return
+
+        # balance type first: it decides whether a .vol is required at
+        # all, and it is cheap (metadata only, no channel arrays)
+        btype = ""
+        for directory in directories:
+            try:
+                btype = run_balance_type(directory)
+            except Exception:                          # noqa: BLE001
+                traceback.print_exc()
+                btype = ""
+            if btype:
+                break
+        self._run_balance_type = btype
+        self.balance_type_detected.emit(btype)
 
         config = {}
         for directory in directories:
