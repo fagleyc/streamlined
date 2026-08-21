@@ -169,8 +169,20 @@ class TestUncertainty:
                            + (pCpQ * bQ) ** 2 + (pCpS * bS) ** 2)
         np.testing.assert_allclose(unc['bias']['Cs']['total'], expected)
 
-    def test_horizontal_config_not_implemented(self):
-        with pytest.raises(NotImplementedError):
+    def test_horizontal_config_is_now_implemented(self):
+        """2026-08-21: the MATLAB left 'Horizontal' (the full-span
+        mount) as a disp() stub, but that mount is what every full-span
+        ATE run uses, so it is implemented — see
+        external_balance._uncertainty_full_span. On a level balance
+        there is no alpha rotation, hence no attitude sensitivity."""
+        unc = calc_uncertainty_ext_balance(
+            {'Cl': np.ones(2)}, np.ones((2, 6)), np.zeros(2),
+            np.ones(2), S=1.0, C=1.0, config='Horizontal')
+        assert np.all(np.isfinite(unc['total']['Cl']))
+        assert 'pCpa' not in unc['InfCoeffs']['Cl']
+
+    def test_unknown_config_is_rejected(self):
+        with pytest.raises(ValueError, match='unknown mounting config'):
             calc_uncertainty_ext_balance(
                 {'Cl': np.ones(2)}, np.ones((2, 6)), np.zeros(2),
-                np.ones(2), S=1.0, C=1.0, config='Horizontal')
+                np.ones(2), S=1.0, C=1.0, config='Diagonal')

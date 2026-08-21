@@ -31,7 +31,7 @@ try:
         copy_balance_markers, FileInfo,
         parse_run_file, scan_run_directory, read_run_config,
         reference_geometry_from_config, find_run_balance_cal,
-        run_balance_type
+        run_balance_type, run_span_config
     )
     from utils.windtunnel.transforms import is_external_balance_data
     BACKEND_AVAILABLE = True
@@ -868,6 +868,9 @@ class DataController(QObject):
         #: balance type of the loaded runs; 'external' means resolved
         #: loads and no .vol requirement
         self._run_balance_type = ""
+        #: 'full' | 'half' | '' — model-span configuration of the
+        #: loaded runs; selects the external-balance resolution
+        self._run_span_config = ""
         self._pressure_cal = None
         self._pressure_cal_file = None
         self._current_worker = None
@@ -1067,9 +1070,16 @@ class DataController(QObject):
         # engineering units, so there is nothing for a .vol to calibrate
         # and demanding one blocks a perfectly reducible run.
         if self._run_balance_type == 'external':
+            span = self._run_span_config
+            span_note = {
+                'half': " ½-span mount: channels resolved with the yaw "
+                        "(alpha) rotation",
+                'full': " full-span mount: channels are already wind-axis",
+            }.get(span, " span configuration not recorded — assuming "
+                        "full span")
             self.status_changed.emit(
                 "External balance detected — resolved loads, no balance "
-                "calibration required")
+                "calibration required;" + span_note)
         elif not self._balance_cal and not self._balance_cal_file:
             self.error_occurred.emit(
                 "No Balance Calibration",
@@ -1183,6 +1193,22 @@ class DataController(QObject):
                 break
         self._run_balance_type = btype
         self.balance_type_detected.emit(btype)
+
+        # ...then the model-span configuration, which decides HOW the
+        # external balance's six channels become wind-axis loads (a
+        # ½-span model yaws the balance with it, so the channels are
+        # body-fixed and permuted). Silently defaulting this was what
+        # made ½-span drag come out backwards, so it is surfaced.
+        span = ""
+        for directory in directories:
+            try:
+                span = run_span_config(directory)
+            except Exception:                          # noqa: BLE001
+                traceback.print_exc()
+                span = ""
+            if span:
+                break
+        self._run_span_config = span
 
         config = {}
         for directory in directories:

@@ -15,9 +15,11 @@ from .transforms import (
     Geometry, BRFForces, WRFForces,
     calc_brf_forces, calc_wrf_forces,
     subtract_wrf_forces,
-    is_external_balance_data, wrf_from_resolved_loads
+    is_external_balance_data
 )
-from .external_balance import external_loads_to_ips
+from .external_balance import (external_loads_to_ips, resolve_external_wrf,
+                               normalize_span_config,
+                               transfer_external_loads_to_mrc)
 from .coefficients import (
     AeroCoefficients, TunnelConditions,
     calc_tunnel_conditions, calc_aero_coeffs
@@ -149,22 +151,42 @@ def reduce_single_point(raw_on: Dict[str, np.ndarray],
     beta_off = raw_off.get('Beta', np.array([0.0]))
 
     if is_external_balance_data(raw_on):
-        # External (ATE) balance: channels are already resolved
-        # wind-axis loads in engineering units — skip the
-        # volts->forces calibration and BRF->WRF rotation entirely and
-        # pass the loads straight through. BRF forces are left empty
-        # (there is no body-axis bridge data to reduce).
+        # External (ATE) balance: the six channels are already resolved
+        # loads in engineering units, so the volts->forces calibration
+        # is skipped entirely and BRF forces stay empty (there is no
+        # body-axis bridge data to reduce).
         #
-        # Units: the Freestream ATE streams N / N*m while this chain
-        # works in lb / in-lb (deprecated/scripts/calc_coeffs.m
-        # 'External': Units = {'lb','lb','lb','in-lb','in-lb','in-lb'}),
-        # so SI-marked loads are converted first; unmarked dicts pass
-        # through untouched (legacy lb / in-lb behavior).
-        result.wrf_on = wrf_from_resolved_loads(
-            external_loads_to_ips(raw_on))
-        result.wrf_off = wrf_from_resolved_loads(
+        # Units first: the chain works in lb / in-lb
+        # (deprecated/scripts/calc_coeffs.m 'External'), and the OGI's
+        # unit setting is operator-selectable, so the recorded
+        # load_units marker drives the conversion.
+        #
+        # Then the MOUNT decides how the channels become wind-axis
+        # loads. Full span: straight through. ½ span: the balance yaws
+        # with the model, so the channels are body-fixed and permuted
+        # (see external_balance.resolve_external_wrf). As on the
+        # internal path, air-on and air-off each resolve with their OWN
+        # alpha so a tare taken at a different attitude still subtracts
+        # correctly.
+        span = normalize_span_config(raw_on.get('span_config'))
+        result.wrf_on = resolve_external_wrf(
+            external_loads_to_ips(raw_on),
+            alpha_deg=result.alpha, span_config=span)
+        result.wrf_off = resolve_external_wrf(
             external_loads_to_ips(raw_off),
+            alpha_deg=alpha_off, span_config=span,
             n_samples=len(result.wrf_on.Lift))
+
+        # MRC shift. The MATLAB never re-referenced external loads
+        # (equivalent to mshift == 0, which this is a no-op for), but
+        # Freestream now offers an MRC and its live report applies one,
+        # so the offline reduction has to agree with it.
+        result.wrf_on = transfer_external_loads_to_mrc(
+            result.wrf_on, result.alpha, result.beta, geo.mshift,
+            span_config=span)
+        result.wrf_off = transfer_external_loads_to_mrc(
+            result.wrf_off, alpha_off, beta_off, geo.mshift,
+            span_config=span)
     else:
         # Calculate BRF forces for air-on and air-off
         result.brf_on = calc_brf_forces(raw_on, cal, geo, balance_config)

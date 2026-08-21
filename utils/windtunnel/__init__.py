@@ -64,9 +64,12 @@ from .transforms import (
 from .external_balance import (
     external_loads_to_ips, external_loads_in_si,
     transfer_external_loads_to_mrc, build_load_matrix,
+    build_load_matrix_from_channels,
+    resolve_external_wrf, normalize_span_config,
     calc_uncertainty_ext_balance, calc_precision_uncertainty_cases,
     EXTERNAL_CHANNEL_ORDER, EXTERNAL_CAL_BIAS, EXTERNAL_CAL_UNITS,
-    N_TO_LBF, NM_TO_INLB
+    SPAN_FULL, SPAN_HALF, SPAN_CONFIGS, SPAN_TO_MOUNT,
+    N_TO_LBF, NM_TO_INLB, KGF_TO_N
 )
 from .plotting import (
     plot_coefficients, plot_drag_polar, plot_pitching_moment,
@@ -147,6 +150,14 @@ __all__ = [
     'external_loads_in_si',
     'transfer_external_loads_to_mrc',
     'build_load_matrix',
+    'build_load_matrix_from_channels',
+    'resolve_external_wrf',
+    'normalize_span_config',
+    'SPAN_FULL',
+    'SPAN_HALF',
+    'SPAN_CONFIGS',
+    'SPAN_TO_MOUNT',
+    'KGF_TO_N',
     'calc_uncertainty_ext_balance',
     'calc_precision_uncertainty_cases',
     'EXTERNAL_CHANNEL_ORDER',

@@ -50,6 +50,21 @@ BALANCE_GROUP_EXTERNAL = 'ATE_Balance'
 # Channels whose per-channel unit attribute decides the resolved-load
 # unit system of an external-balance file (Freestream writes 'N').
 _EXTERNAL_UNIT_PROBE_CHANNELS = ('Lift', 'Drag', 'Side')
+# ...and the moment channels, which are what separate the OGI's "Lb and
+# Lbft" setting from the chain's native lb / in-lb.
+_EXTERNAL_MOMENT_PROBE_CHANNELS = ('Pitch', 'Yaw', 'Roll')
+
+
+def _probe_unit(channel_units: Dict[str, Any],
+                channels: Tuple[str, ...]) -> str:
+    """First non-empty unit string among ``channels``, lowercased."""
+    for ch in channels:
+        unit = channel_units.get(ch)
+        if isinstance(unit, bytes):
+            unit = unit.decode('utf-8', errors='replace')
+        if isinstance(unit, str) and unit.strip():
+            return unit.strip().lower()
+    return ''
 
 
 def _finalize_load_units(raw: 'RawData',
@@ -57,26 +72,38 @@ def _finalize_load_units(raw: 'RawData',
     """
     Record a ``load_units`` marker for external-balance files.
 
-    Freestream's ATE_Balance channels carry a per-channel ``unit``
-    attribute ('N' / 'N*m'); the downstream reduction chain works in
-    lb / in-lb (deprecated/scripts/calc_coeffs.m 'External'), so the
-    unit system is surfaced in ``raw.properties['load_units']`` for
-    the reducers to convert on. Files without unit metadata get no
-    marker (treated as already lb / in-lb, the legacy behavior).
+    The ATE_Balance channels carry per-channel ``unit`` attributes; the
+    downstream chain works in lb / in-lb
+    (deprecated/scripts/calc_coeffs.m 'External'), so the unit system is
+    surfaced in ``raw.properties['load_units']`` for the reducers to
+    convert on.
+
+    The OGI's engineering-unit setting is operator-selectable — "Kg and
+    Kgm, N and Nm, Lb and Lbft" — and never appears on the wire, so the
+    recorded unit attributes are the only witness. All four systems get
+    distinct markers, in particular ``'lbft'`` for pounds-with-FEET,
+    whose moments need a x12 conversion the old "not-SI means already
+    native" rule would have missed. Files without unit metadata get no
+    marker (treated as already lb / in-lb, the legacy behaviour).
     """
     if raw.properties.get('balance_type') != 'external':
         return
     if 'load_units' in raw.properties:
         return
-    for ch in _EXTERNAL_UNIT_PROBE_CHANNELS:
-        unit = channel_units.get(ch)
-        if isinstance(unit, bytes):
-            unit = unit.decode('utf-8', errors='replace')
-        if isinstance(unit, str) and unit.strip():
-            u = unit.strip().lower()
-            raw.properties['load_units'] = (
-                'N' if u.startswith('n') else 'lb')
-            return
+    force_u = _probe_unit(channel_units, _EXTERNAL_UNIT_PROBE_CHANNELS)
+    if not force_u:
+        return
+    moment_u = _probe_unit(channel_units, _EXTERNAL_MOMENT_PROBE_CHANNELS)
+
+    if force_u.startswith('n'):
+        marker = 'N'
+    elif force_u.startswith('kg'):
+        marker = 'kg'
+    elif 'ft' in moment_u:
+        marker = 'lbft'
+    else:
+        marker = 'lb'
+    raw.properties['load_units'] = marker
 
 
 @dataclass
@@ -148,8 +175,17 @@ def _resample_channels_to_fastest(channels: Dict[str, Dict[str, Any]],
     ``channels`` maps channel name -> {'data': ndarray, 'time': ndarray,
     'group': str}, exactly as built by the TDMS/HDF5/MAT readers. Channels
     already on the fastest time base are copied (truncated to its length);
-    slower channels are cubic-interpolated onto it with extrapolation,
-    mirroring the historical read_tdms_file behavior.
+    slower channels are cubic-interpolated onto it.
+
+    Outside a slow channel's own time span the interpolant is CLAMPED to
+    its first/last sample rather than extrapolated. Cubic extrapolation
+    diverges cubically, and a slow group whose block ends before the
+    fastest one's routinely leaves a tail to fill: an ATE run streaming
+    35 load samples against the DaqBook's 200 came back with a Lift
+    channel ranging to -1463 N from data that never left 204..207 N,
+    dragging the point mean from 205 N to 59 N. Holding the end value is
+    the honest answer for a steady dwell — it cannot invent a number the
+    instrument never read.
     """
     if not channels:
         return
@@ -196,11 +232,13 @@ def _resample_channels_to_fastest(channels: Dict[str, Dict[str, Any]],
         ch_dt = ch['time'][1] - ch['time'][0] if len(ch['time']) > 1 else min_dt
 
         if not np.isclose(ch_dt, min_dt) or n < len(ref_time):
+            data = np.asarray(ch['data'], dtype=float)
             interp_func = interp1d(
-                ch['time'], ch['data'],
+                ch['time'], data,
                 kind='cubic' if n >= 4 else 'linear',
                 bounds_error=False,
-                fill_value='extrapolate'
+                # clamp, do NOT extrapolate — see the docstring
+                fill_value=(float(data[0]), float(data[-1]))
             )
             raw.data[name] = interp_func(ref_time)
         else:
@@ -900,15 +938,17 @@ def copy_balance_markers(raw: RawData,
     The reduction chain receives plain channel dicts, so the markers
     ride along as dict entries: ``balance_type`` drives
     :func:`~.transforms.is_external_balance_data`, ``load_units`` drives
-    the SI -> lb/in-lb conversion in
-    :func:`~.external_balance.external_loads_to_ips`, the speed
+    the unit conversion in
+    :func:`~.external_balance.external_loads_to_ips`, ``span_config``
+    selects the mount-dependent channel resolution in
+    :func:`~.external_balance.resolve_external_wrf`, the speed
     markers (``speed_value`` / ``speed_unit`` / ``speed_setpoints``)
     carry the tunnel-speed sweep dimension through to the reducers, and
     ``channel_cal`` carries freestream's injected per-channel tunnel
     calibration (so :func:`~.coefficients.calc_tunnel_conditions` converts
     raw volts -> engineering units with no external .pcf).
     """
-    for key in ('balance_type', 'load_units',
+    for key in ('balance_type', 'load_units', 'span_config',
                 'speed_value', 'speed_unit', 'speed_setpoints',
                 'channel_cal'):
         if key in raw.properties:
@@ -2108,4 +2148,29 @@ def run_balance_type(directory: str) -> str:
         btype = str(meta.get('balance_type') or '').strip().lower()
         if btype in ('external', 'internal'):
             return btype
+    return ''
+
+
+def run_span_config(directory: str) -> str:
+    """Model-span configuration recorded by the runs in a directory.
+
+    Returns ``'half'`` for a semispan model on the turntable,
+    ``'full'`` for a full-span model on the incidence strut, or ``''``
+    when nothing says.
+
+    The marker decides which resolution algorithm an external-balance
+    run needs (see
+    :func:`~.external_balance.resolve_external_wrf`), so the GUI shows
+    it rather than letting a silent default pick for the operator.
+    Freestream stamps ``span_config`` into every run file's root
+    metadata from the positioner's own mapping.
+    """
+    for path in find_run_files(directory)[:8]:
+        try:
+            meta = read_run_metadata(str(path))
+        except Exception:                              # noqa: BLE001
+            continue
+        span = str(meta.get('span_config') or '').strip().lower()
+        if span in ('full', 'half'):
+            return span
     return ''
