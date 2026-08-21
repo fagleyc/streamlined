@@ -179,12 +179,18 @@ def _resample_channels_to_fastest(channels: Dict[str, Dict[str, Any]],
 
     Outside a slow channel's own time span the interpolant is CLAMPED to
     its first/last sample rather than extrapolated. Cubic extrapolation
-    diverges cubically, and a slow group whose block ends before the
-    fastest one's routinely leaves a tail to fill: an ATE run streaming
-    35 load samples against the DaqBook's 200 came back with a Lift
-    channel ranging to -1463 N from data that never left 204..207 N,
-    dragging the point mean from 205 N to 59 N. Holding the end value is
-    the honest answer for a steady dwell — it cannot invent a number the
+    diverges cubically, so any group whose block ENDS EARLIER than the
+    fastest one's leaves a tail that the old ``fill_value='extrapolate'``
+    filled with nonsense: an ATE point carrying 35 load samples against
+    the DaqBook's 200 came back with a Lift channel reaching -1463 N
+    from data that never left 204..207 N, dragging the point mean from
+    205 N to 59 N.
+
+    Recorded runs usually escape this — the recorder pads every group to
+    a common block length, so the time bases coincide and nothing is
+    out of range — but nothing guarantees it, and the failure is silent
+    and unbounded when it does happen. Holding the end value is the
+    honest answer for a steady dwell: it cannot invent a number the
     instrument never read.
     """
     if not channels:

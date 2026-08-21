@@ -350,11 +350,12 @@ def test_slow_channels_are_clamped_not_extrapolated(tmp_path):
     """A slow group whose block ends before the fastest one's must not be
     cubic-extrapolated into the tail.
 
-    Found 2026-08-21: the ATE streams ~50 Hz against a DaqBook running
-    several times faster, so every external run left a tail to fill.
-    Cubic extrapolation diverges cubically — a Lift channel that never
-    left 204..207 N came back reaching -1463 N, and the point mean fell
-    from 205 N to 59 N. Nothing about the reduction can survive that.
+    Found 2026-08-21. Cubic extrapolation diverges cubically: an ATE
+    point carrying 35 load samples against the DaqBook's 200 came back
+    with a Lift channel reaching -1463 N from data that never left
+    204..207 N, and the point mean fell from 205 N to 59 N. Recorded
+    runs usually escape it because the recorder pads groups to a common
+    block length, but nothing guarantees that and the failure is silent.
     """
     from utils.windtunnel.data_io import _resample_channels_to_fastest
     from utils.windtunnel.data_io import RawData
