@@ -244,11 +244,6 @@ class DataPanel(QWidget):
         """Connect internal signals."""
         self.cal_section.balance_loaded.connect(self.balance_cal_requested.emit)
 
-    def set_balance_type(self, balance_type: str):
-        """Route a detected run balance type to the calibration panel."""
-        self.cal_section.set_external_mode(
-            str(balance_type).lower() == "external")
-
         # Model signals
         self.model.cases_changed.connect(self._update_case_list)
         self.model.processing_progress.connect(self._update_progress)
@@ -258,6 +253,11 @@ class DataPanel(QWidget):
         self.case_list.case_visibility_changed.connect(self._on_case_visibility_changed)
         self.case_list.case_color_changed.connect(self._on_case_color_changed)
         self.case_list.add_requested.connect(self._on_add_case_requested)
+
+    def set_balance_type(self, balance_type: str):
+        """Route a detected run balance type to the calibration panel."""
+        self.cal_section.set_external_mode(
+            str(balance_type).lower() == "external")
 
     def _on_case_delete(self, case_id: str):
         """Handle case delete request."""
