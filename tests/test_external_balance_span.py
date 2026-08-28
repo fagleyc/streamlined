@@ -196,14 +196,16 @@ def test_zero_mrc_is_a_no_op_on_both_mounts():
 
 
 def test_half_span_mrc_shift_moves_pitch_by_the_normal_force_arm():
-    """At alpha = 0 the normal force is the Side channel, so a pure x
-    shift moves the pitching moment by -Fz*mx with Fz = Side."""
+    """At alpha = 0 the model normal force Fz is the Side channel, and
+    with x BACK the rigid-body shift M_mrc = M - r x F gives
+    Pitch' = Pitch - (mz*Fx - mx*Fz) = Pitch + mx*Fz for a pure x
+    shift (the load acts forward of an aft MRC: nose-up)."""
     raw = _channels()
     w = resolve_external_wrf(raw, alpha_deg=0.0, span_config="half")
     mx = 1.5
     shifted = transfer_external_loads_to_mrc(w, 0.0, 0.0, [mx, 0, 0],
                                              span_config="half")
-    assert np.allclose(shifted.Pitch, w.Pitch - raw["Side"] * mx)
+    assert np.allclose(shifted.Pitch, w.Pitch + raw["Side"] * mx)
     assert np.allclose(shifted.Lift, w.Lift)     # forces untouched
 
 

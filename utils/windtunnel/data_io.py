@@ -48,11 +48,13 @@ BALANCE_GROUP_INTERNAL = 'StrainBook_0'
 BALANCE_GROUP_EXTERNAL = 'ATE_Balance'
 
 # Channels whose per-channel unit attribute decides the resolved-load
-# unit system of an external-balance file (Freestream writes 'N').
-_EXTERNAL_UNIT_PROBE_CHANNELS = ('Lift', 'Drag', 'Side')
+# unit system of an external-balance file. Current Freestream files
+# record the balance-frame axes (Fx/Fy/Fz forces, Mx/My/Mz moments);
+# legacy files used the wind words — probe both, new names first.
+_EXTERNAL_UNIT_PROBE_CHANNELS = ('Fz', 'Fx', 'Fy', 'Lift', 'Drag', 'Side')
 # ...and the moment channels, which are what separate the OGI's "Lb and
 # Lbft" setting from the chain's native lb / in-lb.
-_EXTERNAL_MOMENT_PROBE_CHANNELS = ('Pitch', 'Yaw', 'Roll')
+_EXTERNAL_MOMENT_PROBE_CHANNELS = ('My', 'Mz', 'Mx', 'Pitch', 'Yaw', 'Roll')
 
 
 def _probe_unit(channel_units: Dict[str, Any],

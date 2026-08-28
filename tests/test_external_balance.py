@@ -39,9 +39,13 @@ def _raw(n=8, load_units=None):
 class TestUnitConversion:
 
     def test_calibration_constants_from_matlab(self):
-        # calc_coeffs.m 'External': Forcechan / Bias / Units
-        assert EXTERNAL_CHANNEL_ORDER == ('Drag', 'Side', 'Lift',
-                                          'Roll', 'Pitch', 'Yaw')
+        # calc_coeffs.m 'External': Forcechan / Bias / Units.  The
+        # MATLAB wrote the column order as (Drag, Side, Lift, Roll,
+        # Pitch, Yaw); those columns are the balance-frame axes
+        # (X back, Y right, Z up) under their honest names now — same
+        # columns, same bias/unit alignment.
+        assert EXTERNAL_CHANNEL_ORDER == ('Fx', 'Fy', 'Fz',
+                                          'Mx', 'My', 'Mz')
         np.testing.assert_allclose(
             EXTERNAL_CAL_BIAS,
             [0.0164, 0.0368, 0.0238, 0.0201, 0.0158, 0.0081])
@@ -93,11 +97,15 @@ class TestMrcTransfer:
         assert out is wrf
 
     def test_shift_at_zero_attitude(self):
-        # At alpha = beta = 0: Fx = Drag, Fy = Side, Fz = Lift, so the
-        # DPM_calc_BRF_forces.m arm terms become:
-        #   Roll  -> Roll  - Side*mz
-        #   Pitch -> Pitch - Lift*mx - Drag*mz
-        #   Yaw   -> Yaw   + Side*my - Side*mx
+        # At alpha = beta = 0 the body forces are Fx = Drag, Fy = Side,
+        # Fz = Lift (X back, Y right, Z up), and the rigid-body shift
+        # M_mrc = M - r x F with r = (mx, my, mz) gives:
+        #   Roll  -> Roll  - (my*Lift - mz*Side)
+        #   Pitch -> Pitch - (mz*Drag - mx*Lift)
+        #   Yaw   -> Yaw   - (mx*Side - my*Drag)
+        # (An earlier port reused the internal balance's element-level
+        # arm terms here, which are that balance's gauge geometry, not a
+        # general moment transfer.)
         wrf = self._wrf()
         mx, my, mz = 1.6, 0.25, -0.5
         out = transfer_external_loads_to_mrc(
@@ -105,11 +113,26 @@ class TestMrcTransfer:
         np.testing.assert_allclose(out.Lift, wrf.Lift)
         np.testing.assert_allclose(out.Drag, wrf.Drag)
         np.testing.assert_allclose(out.Side, wrf.Side)
-        np.testing.assert_allclose(out.Roll, wrf.Roll - wrf.Side * mz)
         np.testing.assert_allclose(
-            out.Pitch, wrf.Pitch - wrf.Lift * mx - wrf.Drag * mz)
+            out.Roll, wrf.Roll - (my * wrf.Lift - mz * wrf.Side))
         np.testing.assert_allclose(
-            out.Yaw, wrf.Yaw + wrf.Side * my - wrf.Side * mx)
+            out.Pitch, wrf.Pitch - (mz * wrf.Drag - mx * wrf.Lift))
+        np.testing.assert_allclose(
+            out.Yaw, wrf.Yaw - (mx * wrf.Side - my * wrf.Drag))
+
+    def test_shift_matches_first_principles_pure_lift(self):
+        # Pure vertical force through the balance centre, MRC 0.5 aft
+        # (x is BACK): the lift acts forward of the MRC, so the moment
+        # about the MRC is nose-up: My' = +mx*Fz.
+        wrf = WRFForces()
+        wrf.Lift = np.full(3, 100.0)
+        for name in ('Drag', 'Side', 'Roll', 'Pitch', 'Yaw'):
+            setattr(wrf, name, np.zeros(3))
+        out = transfer_external_loads_to_mrc(
+            wrf, np.zeros(3), np.zeros(3), [0.5, 0.0, 0.0])
+        np.testing.assert_allclose(out.Pitch, np.full(3, 50.0))
+        np.testing.assert_allclose(out.Roll, np.zeros(3))
+        np.testing.assert_allclose(out.Yaw, np.zeros(3))
 
 
 class TestUncertainty:

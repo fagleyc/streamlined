@@ -120,8 +120,25 @@ def normalize_span_config(value: Any) -> str:
 # Constants ported from deprecated/scripts/calc_coeffs.m ('External' case)
 # ---------------------------------------------------------------------------
 
-# Channel order of the external balance calibration (d.Forcechan)
-EXTERNAL_CHANNEL_ORDER = ('Drag', 'Side', 'Lift', 'Roll', 'Pitch', 'Yaw')
+# Channel order of the external balance calibration (d.Forcechan).
+# The MATLAB wrote it as (Drag, Side, Lift, Roll, Pitch, Yaw); in the
+# balance's own frame (X back, Y right, Z up) those are exactly
+# (Fx, Fy, Fz, Mx, My, Mz) — same columns, honest names. Freestream
+# records these names since the balance-frame rename.
+EXTERNAL_CHANNEL_ORDER = ('Fx', 'Fy', 'Fz', 'Mx', 'My', 'Mz')
+
+# WRFForces slot names in the same column order, for stacking a load
+# matrix out of already-resolved wind loads (full-span only — see
+# build_load_matrix).
+_WRF_SLOT_ORDER = ('Drag', 'Side', 'Lift', 'Roll', 'Pitch', 'Yaw')
+
+# Recorded-name fallbacks per column (newest first), shared with
+# transforms.EXTERNAL_CHANNEL_SOURCES: current files record Fx..Mz,
+# legacy files recorded the wind words.
+_CHANNEL_SOURCES_BY_AXIS = {
+    'Fx': ('Fx', 'Drag'), 'Fy': ('Fy', 'Side'), 'Fz': ('Fz', 'Lift'),
+    'Mx': ('Mx', 'Roll'), 'My': ('My', 'Pitch'), 'Mz': ('Mz', 'Yaw'),
+}
 
 # Per-channel calibration bias, "From Cal file" (calc_coeffs.m d.Bias)
 EXTERNAL_CAL_BIAS = np.array(
@@ -140,8 +157,9 @@ N_TO_LBF = 1.0 / LBF_TO_N                 # force: N -> lbf
 NM_TO_INLB = 1.0 / (LBF_TO_N * 0.0254)    # moment: N*m -> in*lb
 KGF_TO_N = 9.80665                        # standard gravity
 
-_FORCE_CHANNELS = ('Lift', 'Drag', 'Side')
-_MOMENT_CHANNELS = ('Roll', 'Pitch', 'Yaw')
+# Both naming eras: current balance-frame names + legacy wind words.
+_FORCE_CHANNELS = ('Fx', 'Fy', 'Fz', 'Lift', 'Drag', 'Side')
+_MOMENT_CHANNELS = ('Mx', 'My', 'Mz', 'Roll', 'Pitch', 'Yaw')
 
 # ``load_units`` marker -> (force scale to lbf, moment scale to in*lb).
 # The four entries are the OGI's four engineering-unit settings plus the
@@ -192,7 +210,9 @@ def external_loads_in_si(raw_data: Dict[str, Any]) -> bool:
 def external_loads_to_ips(raw_data: Dict[str, Any]) -> Dict[str, Any]:
     """
     Convert resolved external-balance loads to the chain's native units:
-    lbf for Lift/Drag/Side and in*lb for Roll/Pitch/Yaw.
+    lbf for the forces (Fx/Fy/Fz; legacy Lift/Drag/Side) and in*lb for
+    the moments (Mx/My/Mz; legacy Roll/Pitch/Yaw) — whichever recorded
+    names are present are converted.
 
     The historical reduction works in lb / in-lb with Q in psi and
     S, C in inches (deprecated/scripts/calc_coeffs.m 'External':
@@ -325,21 +345,33 @@ def transfer_external_loads_to_mrc(wrf: WRFForces,
     Transfer resolved wind-axis moments to a shifted moment reference
     center.
 
-    The MATLAB pipeline applies the MRC shift for the INTERNAL balance
-    only, at element level inside deprecated/scripts/DPM_calc_BRF_forces.m
-    ('Force' case); the external ATE loads were never re-referenced
-    (equivalent to mshift == [0, 0, 0], which makes this a no-op). This
-    helper extends that internal-path convention to resolved loads: the
-    wind-axis forces are rotated back to body axes (inverse of the
-    rotation in deprecated/scripts/DPM_calc_WRF_forces.m), the
-    DPM_calc_BRF_forces.m net-force moment-arm terms are applied,
+    The MATLAB pipeline never re-referenced the external ATE loads
+    (equivalent to mshift == [0, 0, 0], which makes this a no-op), so
+    there is no heritage formula to preserve here. The transfer is the
+    rigid-body moment shift, applied in the model body frame — X back,
+    Y right, Z up, the same convention as the balance frame — with
+    ``mshift`` = (mx, my, mz) the vector FROM the balance virtual
+    centre TO the model MRC in those axes:
 
-        Mx = Mx - Fy*mz                      (Roll)
-        My = My - Fz*mx - Fx*mz              (Pitch)
-        Mz = Mz + Fy*my - Fy*mx              (Yaw)
+        M_mrc = M_bal − r × F
 
-    and the moments transfer directly back to the wind frame (moments
-    pass straight through BRF<->WRF in DPM_calc_WRF_forces.m).
+        Mx = Mx − (my·Fz − mz·Fy)            (Roll)
+        My = My − (mz·Fx − mx·Fz)            (Pitch)
+        Mz = Mz − (mx·Fy − my·Fx)            (Yaw)
+
+    The wind-axis forces are rotated back to body axes to form F
+    (inverse of the rotation in deprecated/scripts/DPM_calc_WRF_forces.m
+    on the full-span mount; the ½-span mount's resolution is a plane
+    rotation that inverts directly), the arm terms above are applied,
+    and the moments transfer straight back to the wind frame (moments
+    pass through BRF<->WRF unchanged in DPM_calc_WRF_forces.m).
+
+    Note: an earlier port reused the INTERNAL balance's element-level
+    arm terms (DPM_calc_BRF_forces.m), which dropped the my·Fz roll
+    term, flipped the mx·Fz pitch sign, and read Fy where the yaw
+    my-term needs Fx. Those equations encode that balance's gauge
+    geometry, not a general moment transfer, and never affected results
+    because mshift was always zero for external runs.
 
     Parameters
     ----------
@@ -388,9 +420,10 @@ def transfer_external_loads_to_mrc(wrf: WRFForces,
         Fz = wrf.Lift * ca + wrf.Drag * sa
         out = WRFForces()
         out.Lift, out.Drag, out.Side = wrf.Lift, wrf.Drag, wrf.Side
-        out.Roll = wrf.Roll - Fy * mz
-        out.Pitch = wrf.Pitch - Fz * mx - Fx * mz
-        out.Yaw = wrf.Yaw + Fy * my - Fy * mx
+        # M_mrc = M − r × F in model body axes (X back, Y right, Z up)
+        out.Roll = wrf.Roll - (my * Fz - mz * Fy)
+        out.Pitch = wrf.Pitch - (mz * Fx - mx * Fz)
+        out.Yaw = wrf.Yaw - (mx * Fy - my * Fx)
         return out
 
     # Forward rotation from DPM_calc_WRF_forces.m:
@@ -419,11 +452,11 @@ def transfer_external_loads_to_mrc(wrf: WRFForces,
     out.Lift = wrf.Lift
     out.Drag = wrf.Drag
     out.Side = wrf.Side
-    # Moment-arm terms per DPM_calc_BRF_forces.m ('Force' case), applied
-    # to the directly-transferring moments (Roll=Mx, Pitch=My, Yaw=Mz):
-    out.Roll = wrf.Roll - Fy * mz
-    out.Pitch = wrf.Pitch - Fz * mx - Fx * mz
-    out.Yaw = wrf.Yaw + Fy * my - Fy * mx
+    # M_mrc = M − r × F in body axes (X back, Y right, Z up), applied to
+    # the directly-transferring moments (Roll=Mx, Pitch=My, Yaw=Mz):
+    out.Roll = wrf.Roll - (my * Fz - mz * Fy)
+    out.Pitch = wrf.Pitch - (mz * Fx - mx * Fz)
+    out.Yaw = wrf.Yaw - (mx * Fy - my * Fx)
     return out
 
 
@@ -766,7 +799,7 @@ def build_load_matrix(wrf: WRFForces) -> np.ndarray:
     RAW channels — use :func:`build_load_matrix_from_channels` there,
     which is what ``fb = d.red(1).BRF.Elems`` meant in the MATLAB.
     """
-    cols = [np.atleast_1d(getattr(wrf, ch)) for ch in EXTERNAL_CHANNEL_ORDER]
+    cols = [np.atleast_1d(getattr(wrf, ch)) for ch in _WRF_SLOT_ORDER]
     n = max(len(c) for c in cols)
     cols = [np.broadcast_to(c, (n,)) if c.size == 1 else c[:n] for c in cols]
     return np.column_stack(cols)
@@ -785,7 +818,11 @@ def build_load_matrix_from_channels(raw_data: Dict[str, Any],
     """
     arrays = []
     for ch in EXTERNAL_CHANNEL_ORDER:
-        value = raw_data.get(ch)
+        value = None
+        for name in _CHANNEL_SOURCES_BY_AXIS[ch]:
+            if raw_data.get(name) is not None:
+                value = raw_data[name]
+                break
         arrays.append(None if value is None
                       else np.atleast_1d(np.asarray(value, dtype=float)))
     if n_samples is None:
