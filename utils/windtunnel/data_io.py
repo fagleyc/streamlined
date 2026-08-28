@@ -937,6 +937,16 @@ def read_mat_file(filepath: str) -> Tuple[RawData, Dict[str, Any]]:
     return raw, properties
 
 
+# Self-describing markers that ride INSIDE a channel dict alongside the
+# real channels (see copy_balance_markers). They are metadata - a string,
+# a scalar, a small list, a nested dict - never a time series, so any
+# consumer that treats a channel dict as "one array per key" must skip
+# them or it will try to take len() of a 0-d value.
+BALANCE_MARKER_KEYS = ('balance_type', 'load_units', 'span_config',
+                       'speed_value', 'speed_unit', 'speed_setpoints',
+                       'channel_cal')
+
+
 def copy_balance_markers(raw: RawData,
                          channel_dict: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -956,9 +966,7 @@ def copy_balance_markers(raw: RawData,
     calibration (so :func:`~.coefficients.calc_tunnel_conditions` converts
     raw volts -> engineering units with no external .pcf).
     """
-    for key in ('balance_type', 'load_units', 'span_config',
-                'speed_value', 'speed_unit', 'speed_setpoints',
-                'channel_cal'):
+    for key in BALANCE_MARKER_KEYS:
         if key in raw.properties:
             channel_dict[key] = raw.properties[key]
     return channel_dict
@@ -1273,6 +1281,15 @@ RUN_FILE_PATTERNS = ('*.tdms', '*.h5', '*.hdf5', '*.mat')
 MANIFEST_FILENAME = 'manifest.json'
 MANIFEST_SCHEMA_VERSION = 1
 
+# Subdirectories of a run directory that hold OUTPUT, not runs.
+# Freestream writes its reduction products next to the run files, in
+# 'processed/' (a .mat, a .xlsx and an HTML report). Those share the run
+# extensions but are results OF a run, never a run, so a recursive scan
+# must not index them: doing so makes the folder disagree with
+# manifest.json ("lists 32 point(s) but 33 run file(s) are present") and
+# feeds a reduced summary back in as if it were a data point.
+OUTPUT_SUBDIRS = ('processed',)
+
 
 def find_run_files(directory: str, recursive: bool = False) -> list:
     """
@@ -1289,13 +1306,29 @@ def find_run_files(directory: str, recursive: bool = False) -> list:
     -------
     list
         List of Path objects, excluding ``manifest.json`` (an index, not
-        a run file).
+        a run file) and anything under an output subdirectory (see
+        :data:`OUTPUT_SUBDIRS`).
     """
     data_dir = Path(directory)
     files = sorted(f for pat in RUN_FILE_PATTERNS
                    for f in (data_dir.rglob(pat) if recursive
                              else data_dir.glob(pat)))
-    return [f for f in files if f.name.lower() != MANIFEST_FILENAME]
+    return [f for f in files
+            if f.name.lower() != MANIFEST_FILENAME
+            and not _in_output_subdir(f, data_dir)]
+
+
+def _in_output_subdir(path: Path, root: Path) -> bool:
+    """True when ``path`` sits under an output subdirectory of ``root``.
+
+    Only directory components BELOW ``root`` are considered, so a run
+    directory that is itself named 'processed' still indexes normally.
+    """
+    try:
+        parts = path.relative_to(root).parts[:-1]
+    except ValueError:
+        return False
+    return any(part.lower() in OUTPUT_SUBDIRS for part in parts)
 
 
 def read_run_manifest(directory: str) -> Dict[str, Any]:

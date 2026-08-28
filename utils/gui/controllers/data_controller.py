@@ -553,6 +553,7 @@ class ProcessingWorker(QRunnable):
                 # Per-point acquisition metadata (run number, hysteresis
                 # leg) aligned to the reduced point order
                 self._attach_point_metadata(case, on_sorted, ss)
+                self._attach_speed_setpoints(case, ss)
 
                 # Store DAQ reference for later use
                 case.daq = daq
@@ -754,6 +755,26 @@ class ProcessingWorker(QRunnable):
         if any(legs):
             case.sweep_dirs = np.array(legs, dtype=str).reshape(
                 case.alphas.shape)
+
+    @staticmethod
+    def _attach_speed_setpoints(case: TestCase, ss) -> None:
+        """Populate case.speeds, one tunnel-speed setpoint per point.
+
+        The setpoint is the speed COMMANDED for a point, which is what
+        identifies the step of a speed sweep it belongs to; the measured
+        Mach drifts within a step and cannot group them (see
+        TestCase.point_machs).  reduce_steady_state already carries the
+        setpoints in ss.speeds in the reduced point order, so this only
+        reshapes them onto the case.  A size that would misalign with
+        alphas leaves case.speeds EMPTY rather than wrong.
+        """
+        raw = getattr(ss, 'speeds', None)
+        speeds = (np.asarray(raw, dtype=float) if raw is not None
+                  else np.array([]))
+        if speeds.size == 0 or speeds.size != case.alphas.size:
+            case.speeds = np.array([])
+            return
+        case.speeds = speeds.reshape(case.alphas.shape)
 
     def _create_case_from_files(self, case_name: str, config_name: str,
                                  files: list, alphas: list, betas: list,
@@ -1476,6 +1497,7 @@ class DataController(QObject):
             case.CRoll_std = ss.CRoll_std
             case.CPitch_std = ss.CPitch_std
             case.CYaw_std = ss.CYaw_std
+            self._attach_speed_setpoints(case, ss)
 
             # Re-apply blockage correction (if any) with refreshed data
             self._apply_blockage_to_case(case)

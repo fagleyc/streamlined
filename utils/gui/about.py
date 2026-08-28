@@ -6,7 +6,7 @@ Shared metadata template used across the wind-tunnel software ecosystem
 contact, and a compact version history (newest first).
 """
 
-__version__ = "1.2.8"
+__version__ = "1.2.9"
 APP_NAME = "Streamlined"
 AUTHOR = "C. Fagley"
 CONTACT = "casey.fagley@afacademy.af.edu"
@@ -15,6 +15,11 @@ CONTACT = "casey.fagley@afacademy.af.edu"
 # Dates for 1.2.4+ from the repository history; earlier dates from the
 # archived release zips in Versions/.
 VERSION_HISTORY = [
+    ("1.2.9", "2026-08-28",
+     "Speed sweeps group by their commanded setpoint, so each Mach "
+     "step plots and exports as one curve; a run folder's processed "
+     "output is no longer indexed as run data; unsteady MAT/HDF5 "
+     "export fixed for external-balance runs"),
     ("1.2.8", "2026-07-23",
      "External (ATE) balance reduction, freestream .h5/.mat run-file "
      "reading, TDMS shift tool, Help/Documentation system + About fix"),

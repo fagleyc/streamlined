@@ -158,6 +158,12 @@ class TestCase:
     run_numbers: np.ndarray = field(default_factory=lambda: np.array([]))
     sweep_dirs: np.ndarray = field(default_factory=lambda: np.array([]))
 
+    # Per-point tunnel-speed SETPOINT (the speed commanded for that
+    # point), same shape and point order as self.alphas.  This, not the
+    # measured Mach, is what identifies which step of a speed sweep a
+    # point belongs to.  Empty when the runs recorded no setpoint.
+    speeds: np.ndarray = field(default_factory=lambda: np.array([]))
+
     # Per-point tunnel conditions arrays
     machs: np.ndarray = field(default_factory=lambda: np.array([]))
     reynolds: np.ndarray = field(default_factory=lambda: np.array([]))
@@ -229,6 +235,45 @@ class TestCase:
         return (len(self.tunnel_conditions.Q) > 0 or
                 self.mach_number is not None or
                 len(self.machs) > 0)
+
+    @property
+    def point_machs(self) -> np.ndarray:
+        """Per-point Mach to GROUP and FILTER speed steps by.
+
+        A speed step is identified by the setpoint that was commanded,
+        not by the Mach the tunnel actually held.  Within a single step
+        the measured Mach drifts from point to point (a sweep commanded
+        at M0.05 can measure 0.044 to 0.052), so grouping on the raw
+        measured value shatters one alpha sweep into a dozen one-point
+        "curves".  Every point of a step therefore reports its step's
+        MEAN measured Mach here: the grouping is exact (it keys on the
+        setpoint) while the label stays physical (it reports what the
+        tunnel actually ran).
+
+        The mean is rounded to 3 decimals so it compares equal to the
+        value the Mach filter offers.  Two steps whose mean Machs agree
+        to within 0.001 therefore merge, which is intended: at that
+        separation they are the same tunnel condition.
+
+        Falls back to the raw per-point Mach when no setpoints were
+        recorded, and is empty when neither is available.
+        """
+        machs = np.asarray(self.machs, dtype=float).ravel()
+        n_pts = int(np.asarray(self.alphas).size)
+        if machs.size == 0 or machs.size != n_pts:
+            return machs
+        speeds = np.asarray(self.speeds, dtype=float).ravel()
+        if speeds.size != n_pts:
+            return machs
+
+        grouped = machs.copy()
+        for setpoint in np.unique(speeds[~np.isnan(speeds)]):
+            in_step = speeds == setpoint
+            step_machs = machs[in_step]
+            if step_machs.size and np.any(np.isfinite(step_machs)):
+                grouped[in_step] = round(
+                    float(np.nanmean(step_machs)), 3)
+        return grouped
 
     @property
     def description(self) -> str:
@@ -562,9 +607,14 @@ class CaseCollection:
         for case in self:
             if not case.has_data:
                 continue
-            if len(case.machs) > 0:
-                for m in np.asarray(case.machs).flatten():
-                    machs.add(round(float(m), 3))
+            # point_machs collapses each speed STEP to its mean measured
+            # Mach, so a 3-speed sweep offers 3 entries and not one per
+            # acquired point (see TestCase.point_machs).
+            step_machs = case.point_machs
+            if step_machs.size > 0:
+                for m in step_machs:
+                    if np.isfinite(m):
+                        machs.add(round(float(m), 3))
             elif case.mach_number is not None:
                 machs.add(round(case.mach_number, 3))
         return sorted(machs)

@@ -379,13 +379,20 @@ class PlotPanel(QWidget):
 
     @staticmethod
     def _mach_point_mask(case: TestCase, sel_mach: Optional[float]):
-        """Flat boolean mask selecting points whose PER-POINT Mach matches
-        ``sel_mach``, or None when no Mach filtering applies (no selection,
-        no per-point machs, or a length that would misalign with alpha/beta).
+        """Flat boolean mask selecting points in the speed STEP whose Mach
+        matches ``sel_mach``, or None when no Mach filtering applies (no
+        selection, no per-point machs, or a length that would misalign with
+        alpha/beta).
+
+        Matching is on ``case.point_machs`` (each step reported at its mean
+        measured Mach), not the raw per-point Mach, so selecting a step
+        keeps every point of that step: the measured Mach wanders within a
+        step and would drop most of them.
         """
         if sel_mach is None:
             return None
-        machs = np.asarray(getattr(case, 'machs', np.array([]))).flatten()
+        machs = np.asarray(
+            getattr(case, 'point_machs', np.array([]))).flatten()
         n_pts = int(np.asarray(case.alphas).size)
         if machs.size == 0 or machs.size != n_pts:
             return None
@@ -621,13 +628,19 @@ class PlotPanel(QWidget):
 
             single_beta = len(unique_betas) == 1
 
-            # Group by tunnel-speed step (Mach) so each speed is a SEPARATE
+            # Group by tunnel-speed step so each speed is a SEPARATE
             # alpha-sweep trace (never a zigzag connecting points across
             # speeds). A specific Mach selection -> one group; "All" over a
-            # multi-speed config -> one group per distinct Mach; single-speed
-            # -> one ungrouped pass.
+            # multi-speed config -> one group per distinct step;
+            # single-speed -> one ungrouped pass.
+            #
+            # The key is case.point_machs, which reports every point of a
+            # step at that step's MEAN measured Mach.  Keying on the raw
+            # per-point Mach instead would split a step into one trace per
+            # point, because the tunnel does not hold an exact Mach across
+            # an alpha sweep.
             machs_flat = np.asarray(
-                getattr(case, 'machs', np.array([]))).flatten()
+                getattr(case, 'point_machs', np.array([]))).flatten()
             have_mach = (machs_flat.size == len(flat_alpha)
                          and machs_flat.size > 0)
             if mach_mask_flat is not None:

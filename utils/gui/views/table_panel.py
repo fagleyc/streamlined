@@ -31,6 +31,13 @@ try:
 except ImportError:
     UNITS_AVAILABLE = False
 
+# Keys that ride inside a raw channel dict as metadata rather than as a
+# channel.  They must never be exported as if they were signals.
+try:
+    from utils.windtunnel.data_io import BALANCE_MARKER_KEYS
+except ImportError:
+    BALANCE_MARKER_KEYS = ()
+
 
 class ExportAborted(Exception):
     """Raised when an export has nothing to write."""
@@ -1078,6 +1085,11 @@ class TablePanel(QWidget):
                 per_var.setdefault(name, []).append(m)
             air_on = getattr(pt, 'air_on', None) or {}
             for name, val in air_on.items():
+                # Skip the self-describing balance markers: they share the
+                # channel dict with the real channels but are metadata,
+                # and averaging them yields an all-NaN column.
+                if name in BALANCE_MARKER_KEYS:
+                    continue
                 try:
                     arr = np.asarray(val, dtype=float)
                     m = float(np.mean(arr)) if arr.size > 0 else float('nan')
@@ -1127,11 +1139,18 @@ class TablePanel(QWidget):
         by explicit (i,j,k) placement (missing cells -> NaN), so it is robust
         to irregular/incomplete grids. ``axes`` carries the unique
         alpha/beta/mach vectors plus the pre-squeeze dim order and shape.
+
+        The Mach axis comes from ``case.point_machs``, which reports each
+        speed STEP at its mean measured Mach.  The raw per-point Mach
+        cannot define an axis: the tunnel does not hold an exact Mach
+        across an alpha sweep, so a 3-speed sweep would yield an 11-wide
+        Mach axis and a grid that is mostly NaN, with one real value per
+        column.
         """
         try:
             a = np.asarray(case.alphas, dtype=float).flatten()
             b = np.asarray(case.betas, dtype=float).flatten()
-            m = np.asarray(getattr(case, 'machs', np.array([])),
+            m = np.asarray(getattr(case, 'point_machs', np.array([])),
                            dtype=float).flatten()
         except Exception:
             return None, None
@@ -1327,14 +1346,19 @@ class TablePanel(QWidget):
                 for col_idx, name in enumerate(elem_names):
                     data[f'element_{name}'] = elems[:, col_idx]
 
-        # Raw channels (air-on)
+        # Raw channels (air-on).  The channel dict also carries the
+        # self-describing balance markers (balance_type, speed_value,
+        # channel_cal, ...), which are metadata and not time series:
+        # exporting them would write a string or a nested dict into a
+        # signal column, and len() on the 0-d ones raises outright.
         if hasattr(pt, 'air_on') and pt.air_on is not None:
-            skip = {'Time', 'Alpha', 'Beta'}
+            skip = {'Time', 'Alpha', 'Beta'} | set(BALANCE_MARKER_KEYS)
             for key, val in pt.air_on.items():
-                if key not in skip:
-                    arr = np.asarray(val)
-                    if len(arr) > 0:
-                        data[f'raw_{key}'] = arr
+                if key in skip:
+                    continue
+                arr = np.asarray(val)
+                if arr.ndim >= 1 and arr.size > 0:
+                    data[f'raw_{key}'] = arr
 
         return data
 
