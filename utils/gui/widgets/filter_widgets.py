@@ -299,13 +299,47 @@ class PlotTypeSelector(QWidget):
          "Lateral stability dCl/dbeta (requires >= 2 betas)"),
     ]
 
+    # X-axis variables the user can plot against, overriding the one the
+    # plot type implies.  The empty value means "whatever the plot type
+    # says", which is the default and the historical behavior.
+    #
+    # Mach / Re / q / U_inf are SPEED-sweep variables: picking one of them
+    # makes each alpha/beta point its own trace across the speed steps,
+    # instead of each speed step its own alpha sweep.
+    X_AXIS_VARS = [
+        ("Default", "",
+         "Use the x variable the selected plot type defines"),
+        ("\u03b1  alpha", "Alpha",
+         "Angle of attack [deg]; one trace per sideslip and speed step"),
+        ("\u03b2  beta", "Beta",
+         "Sideslip angle [deg]; one trace per angle of attack"),
+        ("Mach", "Mach",
+         "Measured freestream Mach; one trace per alpha/beta, so a "
+         "speed sweep reads as a curve"),
+        ("Re", "Re",
+         "Reynolds number; one trace per alpha/beta"),
+        ("q", "Q",
+         "Dynamic pressure, in the output unit system; "
+         "one trace per alpha/beta"),
+        ("U\u221e", "U_inf",
+         "Freestream velocity, in the output unit system; "
+         "one trace per alpha/beta"),
+        ("CL", "Cl", "Lift coefficient on the x axis"),
+        ("CD", "Cd", "Drag coefficient on the x axis"),
+        ("CY", "Cs", "Side-force coefficient on the x axis"),
+        ("Cl (roll)", "CRoll", "Rolling-moment coefficient on the x axis"),
+        ("Cm", "CPitch", "Pitching-moment coefficient on the x axis"),
+        ("Cn", "CYaw", "Yawing-moment coefficient on the x axis"),
+        ("L/D", "L/D", "Lift-to-drag ratio on the x axis"),
+    ]
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._setup_ui()
 
     def _setup_ui(self):
-        # 2-row grid: Plot Type on top, Custom Y below it so both
-        # combos line up under their respective labels.
+        # 3-row grid: Plot Type, X Axis, Custom Y, so all three axis
+        # controls line up under their respective labels.
         from PyQt6.QtWidgets import QGridLayout
         layout = QGridLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -326,16 +360,31 @@ class PlotTypeSelector(QWidget):
         self.cmb_plot_type.currentIndexChanged.connect(self._on_changed)
         layout.addWidget(self.cmb_plot_type, 0, 1)
 
+        # X-axis override - when set, replaces the x variable the plot
+        # type implies.  Custom calculator variables are appended after
+        # the built-ins by populate_custom_vars().
+        layout.addWidget(QLabel("X Axis:"), 1, 0)
+        self.cmb_x_axis = QComboBox()
+        self.cmb_x_axis.setMinimumWidth(180)
+        for display_name, value, tooltip in self.X_AXIS_VARS:
+            self.cmb_x_axis.addItem(display_name, value)
+            idx = self.cmb_x_axis.count() - 1
+            self.cmb_x_axis.setItemData(
+                idx, tooltip, Qt.ItemDataRole.ToolTipRole)
+        self._n_builtin_x = self.cmb_x_axis.count()
+        self.cmb_x_axis.currentIndexChanged.connect(self._on_changed)
+        layout.addWidget(self.cmb_x_axis, 1, 1)
+
         # Custom Y override - when set, overrides the y variable from
         # the plot type.  Populated dynamically from active calculator
         # rules via populate_custom_vars().
         self.lbl_custom = QLabel("Custom Y:")
-        layout.addWidget(self.lbl_custom, 1, 0)
+        layout.addWidget(self.lbl_custom, 2, 0)
         self.cmb_custom_y = QComboBox()
         self.cmb_custom_y.setMinimumWidth(180)
         self.cmb_custom_y.addItem("(none)", "")
         self.cmb_custom_y.currentIndexChanged.connect(self._on_changed)
-        layout.addWidget(self.cmb_custom_y, 1, 1)
+        layout.addWidget(self.cmb_custom_y, 2, 1)
         layout.setColumnStretch(1, 1)
 
     def _on_changed(self, index):
@@ -357,8 +406,25 @@ class PlotTypeSelector(QWidget):
         """Return the user-selected custom Y variable (empty string if none)."""
         return self.cmb_custom_y.currentData() or ""
 
+    def get_x_var(self) -> str:
+        """Return the selected x variable, or "" for the plot-type default."""
+        return self.cmb_x_axis.currentData() or ""
+
+    def set_x_var(self, var: str):
+        """Select an x variable by name; an unknown name selects the default."""
+        for i in range(self.cmb_x_axis.count()):
+            if self.cmb_x_axis.itemData(i) == (var or ""):
+                self.cmb_x_axis.setCurrentIndex(i)
+                return
+        self.cmb_x_axis.setCurrentIndex(0)
+
     def populate_custom_vars(self, names: list):
-        """Re-populate the custom-Y combobox from a list of variable names."""
+        """Re-populate the custom-variable entries of both axis combos.
+
+        Calculator outputs are offered on BOTH axes: as the Y override, and
+        appended after the built-ins as an x variable.  Each combo keeps its
+        current selection when that variable still exists.
+        """
         current = self.cmb_custom_y.currentData()
         self.cmb_custom_y.blockSignals(True)
         self.cmb_custom_y.clear()
@@ -371,3 +437,18 @@ class PlotTypeSelector(QWidget):
                     self.cmb_custom_y.setCurrentIndex(i)
                     break
         self.cmb_custom_y.blockSignals(False)
+
+        # X axis keeps its built-in entries; only the appended ones are
+        # replaced, so a built-in selection survives a calculator edit.
+        current_x = self.cmb_x_axis.currentData()
+        self.cmb_x_axis.blockSignals(True)
+        while self.cmb_x_axis.count() > self._n_builtin_x:
+            self.cmb_x_axis.removeItem(self.cmb_x_axis.count() - 1)
+        for n in names:
+            self.cmb_x_axis.addItem(n, n)
+        if current_x:
+            for i in range(self.cmb_x_axis.count()):
+                if self.cmb_x_axis.itemData(i) == current_x:
+                    self.cmb_x_axis.setCurrentIndex(i)
+                    break
+        self.cmb_x_axis.blockSignals(False)

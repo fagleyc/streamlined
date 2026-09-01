@@ -730,6 +730,34 @@ Both implement the same API: `plot()`, `clear()`, `refresh()`, `set_labels()`, `
 | C_n (yaw) vs Alpha | alpha | C_n |
 | Lateral vs Beta | beta | C_Y |
 
+**X Axis selector:**
+
+The `X Axis` dropdown overrides the x variable the plot type implies, so
+any plot can be re-cast against a different independent variable. It
+offers alpha, beta, Mach, Re, q, U_inf, every coefficient, L/D, and every
+variable defined in the data calculator. `Default` keeps the plot type's
+own x variable. It replaces the old `Plot vs beta` checkbox, which is now
+the beta entry.
+
+Choosing a SPEED variable (Mach, Re, q, U_inf) inverts how points are
+grouped into traces:
+
+| X variable | Trace grouping | A 3-speed, 8-alpha sweep draws |
+|------------|----------------|--------------------------------|
+| alpha, or a coefficient | one trace per speed step and sideslip | 3 curves of 8 points |
+| beta | one trace per angle of attack | 8 curves |
+| Mach, Re, q, U_inf | one trace per (alpha, beta) | 8 curves of 3 points |
+
+Without the inversion a Mach sweep would plot as a column of unconnected
+points, because each speed step holds only one point per angle. Points
+within a trace are ordered by the x variable itself, so a run where the
+tunnel overshot a setpoint still draws a monotonic line.
+
+`q` and `U_inf` are converted into the active output unit system and the
+axis is labelled accordingly, matching the data table. A calculator
+variable is labelled with its own name, since only the user knows its
+units.
+
 ---
 
 ## Export Capabilities
