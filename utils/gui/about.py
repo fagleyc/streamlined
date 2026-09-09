@@ -6,7 +6,7 @@ Shared metadata template used across the wind-tunnel software ecosystem
 contact, and a compact version history (newest first).
 """
 
-__version__ = "1.3.0"
+__version__ = "1.3.1"
 APP_NAME = "Streamlined"
 AUTHOR = "C. Fagley"
 CONTACT = "casey.fagley@afacademy.af.edu"
@@ -15,6 +15,10 @@ CONTACT = "casey.fagley@afacademy.af.edu"
 # Dates for 1.2.4+ from the repository history; earlier dates from the
 # archived release zips in Versions/.
 VERSION_HISTORY = [
+    ("1.3.1", "2026-09-09",
+     "Alpha/beta attitude offsets in the model geometry (bent-sting "
+     "rectification): added to every point's recorded attitude, "
+     "air-on and air-off, before reduction"),
     ("1.3.0", "2026-09-01",
      "X Axis dropdown on the plot panel: plot against Mach, Re, q, U_inf, "
      "any coefficient or any calculator variable, replacing the 'Plot vs beta' "

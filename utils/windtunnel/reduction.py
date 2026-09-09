@@ -128,9 +128,17 @@ def reduce_single_point(raw_on: Dict[str, np.ndarray],
     result.air_on = dict(raw_on) if raw_on else {}
     result.air_off = dict(raw_off) if raw_off else {}
 
-    # Store position data from AirON
-    result.alpha = raw_on.get('Alpha', np.array([0.0]))
-    result.beta = raw_on.get('Beta', np.array([0.0]))
+    # Store position data from AirON.  The geometry's attitude offsets
+    # are applied HERE, before any transform reads the attitude, so the
+    # wind-axis resolution, the MRC transfer and the steady-state
+    # alpha/beta all see the corrected angle.  The raw 'Alpha'/'Beta'
+    # channels in result.air_on stay exactly as recorded.
+    a_off = float(getattr(geo, 'alpha_offset', 0.0) or 0.0)
+    b_off = float(getattr(geo, 'beta_offset', 0.0) or 0.0)
+    result.alpha = np.asarray(raw_on.get('Alpha', np.array([0.0])),
+                              dtype=float) + a_off
+    result.beta = np.asarray(raw_on.get('Beta', np.array([0.0])),
+                             dtype=float) + b_off
     result.time = raw_on.get('Time', np.array([0.0]))
 
     # Speed setting from AirON (first-class sweep dimension). The Speed
@@ -146,9 +154,13 @@ def reduce_single_point(raw_on: Dict[str, np.ndarray],
     result.speed_unit = raw_on.get('speed_unit')
     result.speed_setpoints = raw_on.get('speed_setpoints')
 
-    # Get position data from AirOFF (may differ from AirON if using a single tare)
-    alpha_off = raw_off.get('Alpha', np.array([0.0]))
-    beta_off = raw_off.get('Beta', np.array([0.0]))
+    # Get position data from AirOFF (may differ from AirON if using a
+    # single tare).  The sting is just as bent with the wind off, so the
+    # same offsets apply to the tare attitude.
+    alpha_off = np.asarray(raw_off.get('Alpha', np.array([0.0])),
+                           dtype=float) + a_off
+    beta_off = np.asarray(raw_off.get('Beta', np.array([0.0])),
+                          dtype=float) + b_off
 
     if is_external_balance_data(raw_on):
         # External (ATE) balance: the six channels are already resolved

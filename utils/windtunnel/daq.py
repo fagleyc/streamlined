@@ -240,6 +240,7 @@ class DAQ:
 
     def set_geometry(self, MAC: float, S: float, MRC: List[float],
                      units: str = 'IPS', span: float = 1.0,
+                     alpha_offset: float = 0.0, beta_offset: float = 0.0,
                      **kwargs) -> 'DAQ':
         """
         Set model geometry parameters.
@@ -256,6 +257,10 @@ class DAQ:
             Input units: 'IPS', 'FPS', 'MKS', 'CGS'
         span : float
             Reference span (for CRoll and CYaw normalization)
+        alpha_offset, beta_offset : float
+            Attitude offsets [deg] added to every point's recorded alpha
+            and beta before reduction (bent-sting rectification). Always
+            in degrees, regardless of ``units``.
         **kwargs
             Additional geometry parameters
 
@@ -282,7 +287,9 @@ class DAQ:
             C=MAC * cL,
             S=S * cS,
             b=span * cL,
-            mshift=np.array(MRC) * cL
+            mshift=np.array(MRC) * cL,
+            alpha_offset=float(alpha_offset),
+            beta_offset=float(beta_offset),
         )
 
         # Add any extra parameters

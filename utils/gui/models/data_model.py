@@ -106,11 +106,13 @@ class DataModel(QObject):
         self.default_calibration: str = ''
         self.case_calibration_map: Dict[str, str] = {}  # case_id -> cal name
 
-        # Multi-geometry definitions: name → {mac, ref_area, span, mrc, units}
+        # Multi-geometry definitions: name → {mac, ref_area, span, mrc,
+        # units, alpha_offset, beta_offset}
         self.geometries: Dict[str, dict] = {
             'Default': {
                 'mac': 1.0, 'ref_area': 1.0, 'span': 1.0,
-                'mrc': [0.0, 0.0, 0.0], 'units': 'IPS'
+                'mrc': [0.0, 0.0, 0.0], 'units': 'IPS',
+                'alpha_offset': 0.0, 'beta_offset': 0.0,
             }
         }
         self.default_geometry: str = 'Default'
@@ -300,6 +302,18 @@ class DataModel(QObject):
             self.geometries[self.default_geometry]['mrc'] = value
 
     @property
+    def alpha_offset(self) -> float:
+        """Default geometry's alpha offset [deg] (bent-sting correction)."""
+        return float(self.geometries.get(self.default_geometry, {})
+                     .get('alpha_offset', 0.0) or 0.0)
+
+    @property
+    def beta_offset(self) -> float:
+        """Default geometry's beta offset [deg] (bent-sting correction)."""
+        return float(self.geometries.get(self.default_geometry, {})
+                     .get('beta_offset', 0.0) or 0.0)
+
+    @property
     def units(self) -> str:
         return self.geometries.get(self.default_geometry, {}).get('units', 'IPS')
 
@@ -320,7 +334,8 @@ class DataModel(QObject):
         if params is None:
             params = {
                 'mac': 1.0, 'ref_area': 1.0, 'span': 1.0,
-                'mrc': [0.0, 0.0, 0.0], 'units': 'IPS'
+                'mrc': [0.0, 0.0, 0.0], 'units': 'IPS',
+                'alpha_offset': 0.0, 'beta_offset': 0.0,
             }
         self.geometries[name] = params
 

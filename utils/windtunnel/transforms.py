@@ -164,6 +164,14 @@ class Geometry:
     b: float = 1.0  # Reference span (inches) — used for CRoll, CYaw
     mshift: np.ndarray = field(default_factory=lambda: np.array([0.0, 0.0, 0.0]))  # MRC shift (x, y, z)
     flip: bool = False
+    # Attitude offsets [deg], ADDED to the recorded alpha and beta of every
+    # point (air-on and air-off alike) before the attitude is used for
+    # anything. They rectify a systematic misalignment between what the
+    # positioner recorded and what the model actually saw, the usual case
+    # being a bent or drooped sting: the recorded angle is the sting
+    # root, the model sits at root + offset.
+    alpha_offset: float = 0.0
+    beta_offset: float = 0.0
 
 
 def get_distance_values(cal: BalanceCalibration) -> Dict[str, float]:

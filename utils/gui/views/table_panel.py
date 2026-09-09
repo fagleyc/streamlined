@@ -911,6 +911,8 @@ class TablePanel(QWidget):
             'ref_area': np.float64(self.model.ref_area),
             'span': np.float64(self.model.span),
             'mrc': np.array(self.model.mrc, dtype=np.float64),
+            'alpha_offset_deg': np.float64(self.model.alpha_offset),
+            'beta_offset_deg': np.float64(self.model.beta_offset),
             'input_units': self.model.units,
             'output_units': self.model.output_units,
         }
@@ -1736,6 +1738,8 @@ class TablePanel(QWidget):
                 geo_grp.attrs['span'] = self.model.span
                 geo_grp.create_dataset('mrc',
                                        data=np.array(self.model.mrc))
+                geo_grp.attrs['alpha_offset_deg'] = self.model.alpha_offset
+                geo_grp.attrs['beta_offset_deg'] = self.model.beta_offset
                 geo_grp.attrs['input_units'] = self.model.units
                 geo_grp.attrs['output_units'] = self.model.output_units
 

@@ -610,6 +610,38 @@ The model geometry defines the reference values used for non-dimensionalization 
 | Reference Area | S | Wing planform area — reference area for all coefficients |
 | Reference Span | b | Wing span — reference length for rolling and yawing moments |
 | MRC Shift | mshift | [x, y, z] offset from balance center to desired moment reference center |
+| Alpha Offset | alpha_offset | Added to every point's recorded angle of attack [deg] before reduction |
+| Beta Offset | beta_offset | Added to every point's recorded sideslip [deg] before reduction |
+
+### Attitude Offset (bent-sting rectification)
+
+A bent or drooped sting puts the model at a different attitude from the
+one the positioner recorded: the encoder reports the sting root, and the
+model sits at root + offset. Each geometry therefore carries an alpha and
+a beta offset, in degrees, applied in `reduce_single_point` before
+anything reads the attitude:
+
+```
+alpha_model = alpha_recorded + alpha_offset
+beta_model  = beta_recorded  + beta_offset
+```
+
+The offset is applied to the air-on point AND to its air-off tare, since
+the sting is just as bent with the wind off. Everything downstream then
+sees the corrected attitude: the body-to-wind resolution, the MRC moment
+transfer, the steady-state alpha/beta grid, the alpha filter, and the
+exports. Reducing a point recorded at 0 deg with a 12 deg offset is
+indistinguishable from reducing one recorded at 12 deg with no offset.
+
+The raw `Alpha` and `Beta` channels are NOT modified: the `Raw` export
+group and the time-history viewer show them exactly as recorded, so the
+correction is always visible and reversible. The offsets are written into
+the export geometry metadata (`geometry.alpha_offset_deg`,
+`geometry.beta_offset_deg`).
+
+Offsets are always degrees, independent of the geometry input unit
+system. Changing an offset in Edit > Model Geometry re-reduces every case
+assigned to that geometry, as any other geometry edit does.
 
 ### MRC Shift Convention
 
@@ -620,7 +652,7 @@ The MRC shift vector `[mshift_x, mshift_y, mshift_z]` defines the offset from th
 
 ### Multi-Geometry Support
 
-Multiple named geometry definitions can be configured, each with its own MAC, span, reference area, and MRC. Individual test cases can be assigned different geometries (e.g., different wing configurations tested on the same balance). Cases are assigned geometry via right-click context menu, and re-reduction is triggered automatically.
+Multiple named geometry definitions can be configured, each with its own MAC, span, reference area, MRC, and alpha/beta attitude offset. Individual test cases can be assigned different geometries (e.g., different wing configurations tested on the same balance). Cases are assigned geometry via right-click context menu, and re-reduction is triggered automatically.
 
 ---
 
@@ -774,7 +806,7 @@ units.
 **HDF5 Structure (when extended data enabled):**
 ```
 /calibration/           — balance and pressure cal metadata
-/geometry/              — reference values (MAC, span, area, MRC)
+/geometry/              — reference values (MAC, span, area, MRC, alpha/beta offset)
 /<case_name>/
     averaged/           — steady-state coefficients and tunnel conditions
     air_on/point_0/     — raw air-on time-series per test point

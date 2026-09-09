@@ -469,8 +469,10 @@ class ProcessingWorker(QRunnable):
             mrc = self.geometry.get('mrc', [0.0, 0.0, 0.0])
             units = self.geometry.get('units', 'IPS')
 
-            daq.set_geometry(MAC=mac, S=ref_area, MRC=mrc, units=units,
-                             span=span)
+            daq.set_geometry(
+                MAC=mac, S=ref_area, MRC=mrc, units=units, span=span,
+                alpha_offset=self.geometry.get('alpha_offset', 0.0) or 0.0,
+                beta_offset=self.geometry.get('beta_offset', 0.0) or 0.0)
 
             # Load only this configuration's files (not the whole directory)
             if directory is None:
@@ -1150,6 +1152,8 @@ class DataController(QObject):
             'span': default_geo.get('span', 1.0),
             'mrc': default_geo.get('mrc', [0.0, 0.0, 0.0]),
             'units': default_geo.get('units', 'IPS'),
+            'alpha_offset': default_geo.get('alpha_offset', 0.0) or 0.0,
+            'beta_offset': default_geo.get('beta_offset', 0.0) or 0.0,
             'output_units': self.model.output_units,
         }
 
@@ -1460,7 +1464,9 @@ class DataController(QObject):
                 S=geo.get('ref_area', 1.0),
                 MRC=geo.get('mrc', [0.0, 0.0, 0.0]),
                 units=geo.get('units', 'IPS'),
-                span=geo.get('span', 1.0)
+                span=geo.get('span', 1.0),
+                alpha_offset=geo.get('alpha_offset', 0.0) or 0.0,
+                beta_offset=geo.get('beta_offset', 0.0) or 0.0,
             )
 
             # Apply per-case calibration if assigned (includes its own
@@ -1939,6 +1945,8 @@ class DataController(QObject):
                         'span': geo_config.get('span', 1.0),
                         'mrc': geo_config.get('mrc', [0.0, 0.0, 0.0]),
                         'units': geo_config.get('units', 'IPS'),
+                        'alpha_offset': geo_config.get('alpha_offset', 0.0),
+                        'beta_offset': geo_config.get('beta_offset', 0.0),
                     }
                 }
                 self.model.default_geometry = 'Default'
@@ -2023,6 +2031,8 @@ class DataController(QObject):
             'ref_area': self.model.ref_area,
             'mrc': self.model.mrc,
             'units': self.model.units,
+            'alpha_offset': self.model.alpha_offset,
+            'beta_offset': self.model.beta_offset,
             'output_units': self.model.output_units,
             'facility': self.model.facility,
         }

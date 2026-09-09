@@ -426,7 +426,8 @@ class MainWindow(QMainWindow):
 
             # Determine which geometry names changed (so we can re-reduce
             # cases that use them).  A geometry "changed" if any reference
-            # value (mac, ref_area, span, mrc, units) differs.
+            # value (mac, ref_area, span, mrc, units, alpha/beta offset)
+            # differs.
             changed_names = set()
             for name, new_def in new_geos.items():
                 old_def = old_geos.get(name)

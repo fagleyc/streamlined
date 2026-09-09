@@ -30,19 +30,21 @@ class GeometryDialog(QDialog):
     Dialog for managing multiple model geometry definitions.
 
     Layout: geometry list on left, edit form on right.
-    Each geometry has MAC, span, ref area, MRC offset, and input units.
+    Each geometry has MAC, span, ref area, MRC offset, attitude offsets
+    (alpha/beta, for a bent sting), and input units.
     """
 
     def __init__(self, parent=None, geometries: dict = None):
         super().__init__(parent)
         self.setWindowTitle("Model Geometry")
-        self.setMinimumSize(650, 500)
+        self.setMinimumSize(650, 560)
 
         if geometries is None:
             geometries = {
                 'Default': {
                     'mac': 1.0, 'ref_area': 1.0, 'span': 1.0,
-                    'mrc': [0.0, 0.0, 0.0], 'units': 'IPS'
+                    'mrc': [0.0, 0.0, 0.0], 'units': 'IPS',
+                    'alpha_offset': 0.0, 'beta_offset': 0.0,
                 }
             }
 
@@ -141,6 +143,46 @@ class GeometryDialog(QDialog):
 
         right.addWidget(mrc_group)
 
+        # Attitude offsets.  Added to the recorded alpha/beta of every
+        # point before reduction; the usual reason is a bent sting, where
+        # the positioner reports the sting root and the model sits at
+        # root + offset.  Always degrees, independent of the unit system.
+        att_group = QGroupBox("Attitude Offset (bent sting)")
+        att_layout = QFormLayout(att_group)
+
+        self.spn_alpha_offset = QDoubleSpinBox()
+        self.spn_alpha_offset.setRange(-90.0, 90.0)
+        self.spn_alpha_offset.setDecimals(3)
+        self.spn_alpha_offset.setSingleStep(0.1)
+        self.spn_alpha_offset.setSuffix(" deg")
+        self.spn_alpha_offset.setToolTip(
+            "Added to the recorded angle of attack of every point "
+            "(air-on and air-off) before reduction.\n"
+            "Model alpha = recorded alpha + offset.")
+        att_layout.addRow("\u03b1 offset:", self.spn_alpha_offset)
+
+        self.spn_beta_offset = QDoubleSpinBox()
+        self.spn_beta_offset.setRange(-90.0, 90.0)
+        self.spn_beta_offset.setDecimals(3)
+        self.spn_beta_offset.setSingleStep(0.1)
+        self.spn_beta_offset.setSuffix(" deg")
+        self.spn_beta_offset.setToolTip(
+            "Added to the recorded sideslip of every point "
+            "(air-on and air-off) before reduction.\n"
+            "Model beta = recorded beta + offset.")
+        att_layout.addRow("\u03b2 offset:", self.spn_beta_offset)
+
+        att_info = QLabel(
+            "Rectifies a systematic attitude error such as a bent or "
+            "drooped sting.\nApplied to the reduced alpha/beta; the raw "
+            "channels are exported as recorded.")
+        att_info.setStyleSheet(
+            f"color: {DarkTheme.TEXT_SECONDARY}; font-size: 9pt;")
+        att_info.setWordWrap(True)
+        att_layout.addRow("", att_info)
+
+        right.addWidget(att_group)
+
         # Input units
         units_group = QGroupBox("Geometry Input Units")
         units_layout = QFormLayout(units_group)
@@ -196,6 +238,10 @@ class GeometryDialog(QDialog):
         self.spn_mrc_x.setValue(mrc[0])
         self.spn_mrc_y.setValue(mrc[1])
         self.spn_mrc_z.setValue(mrc[2])
+        self.spn_alpha_offset.setValue(
+            float(geo.get('alpha_offset', 0.0) or 0.0))
+        self.spn_beta_offset.setValue(
+            float(geo.get('beta_offset', 0.0) or 0.0))
         idx = self.cmb_units.findText(geo.get('units', 'IPS'))
         if idx >= 0:
             self.cmb_units.setCurrentIndex(idx)
@@ -210,6 +256,8 @@ class GeometryDialog(QDialog):
             'span': self.spn_span.value(),
             'mrc': [self.spn_mrc_x.value(), self.spn_mrc_y.value(), self.spn_mrc_z.value()],
             'units': self.cmb_units.currentText(),
+            'alpha_offset': self.spn_alpha_offset.value(),
+            'beta_offset': self.spn_beta_offset.value(),
         }
 
     def _on_name_edited(self):
@@ -245,7 +293,8 @@ class GeometryDialog(QDialog):
         self._save_current_to_dict()
         self._geometries[name] = {
             'mac': 1.0, 'ref_area': 1.0, 'span': 1.0,
-            'mrc': [0.0, 0.0, 0.0], 'units': 'IPS'
+            'mrc': [0.0, 0.0, 0.0], 'units': 'IPS',
+            'alpha_offset': 0.0, 'beta_offset': 0.0,
         }
         self.list_widget.addItem(name)
         self.list_widget.setCurrentRow(self.list_widget.count() - 1)
@@ -288,9 +337,12 @@ class GeometryDialog(QDialog):
                 'span': geo.get('span', 1.0),
                 'mrc': geo.get('mrc', [0.0, 0.0, 0.0]),
                 'units': geo.get('units', 'IPS'),
+                'alpha_offset': geo.get('alpha_offset', 0.0),
+                'beta_offset': geo.get('beta_offset', 0.0),
             }
         return {'mac': 1.0, 'ref_area': 1.0, 'span': 1.0,
-                'mrc': [0.0, 0.0, 0.0], 'units': 'IPS'}
+                'mrc': [0.0, 0.0, 0.0], 'units': 'IPS',
+                'alpha_offset': 0.0, 'beta_offset': 0.0}
 
 
 class OutputUnitsDialog(QDialog):
