@@ -650,6 +650,37 @@ The MRC shift vector `[mshift_x, mshift_y, mshift_z]` defines the offset from th
 - **y:** Lateral (positive to port)
 - **z:** Vertical (positive down)
 
+### Commanded vs Measured Attitude
+
+Every point has two attitudes, and they are used for different things.
+
+| | Source | Used for |
+|---|--------|----------|
+| **Commanded** | `meta.run.alpha` / `beta`, the directory manifest, or the filename token | Grouping, filtering, export axes |
+| **Measured** | The `Alpha` / `Beta` channels, averaged over the point (plus any attitude offset) | Plotted x values, table columns, exported arrays |
+
+The positioner never lands exactly on the commanded angle, and it misses
+differently on every pass: a commanded alpha of 4.0 records as 3.949 on
+one speed step and 3.951 on the next. Both are the same point of the
+sweep, but rounding the measured value to a tenth puts them in different
+groups, so one angle becomes two traces, two entries in the alpha filter
+and two mostly-empty columns in the MATLAB export.
+
+The commanded value is a single number for every point taken at that
+angle, so it is the grouping key throughout: plot traces, the alpha/beta
+filters, the `Axes.alpha` / `Axes.beta` vectors of the MAT/HDF5 export,
+and the grid detection in `reduce_steady_state`. The same rule applies to
+speed: the commanded setpoint identifies a Mach step, and each step is
+labelled with its mean measured Mach.
+
+The measured attitude is never overwritten. It is what the plot puts on
+the x axis, what the data table shows, and what `Position.Alpha` holds in
+an export, because it is where the model actually was.
+
+Runs that record no commanded value (legacy TDMS) fall back to grouping
+on the measured attitude, which is the historical behavior. A partial
+record is refused wholesale rather than mixing the two.
+
 ### Multi-Geometry Support
 
 Multiple named geometry definitions can be configured, each with its own MAC, span, reference area, MRC, and alpha/beta attitude offset. Individual test cases can be assigned different geometries (e.g., different wing configurations tested on the same balance). Cases are assigned geometry via right-click context menu, and re-reduction is triggered automatically.

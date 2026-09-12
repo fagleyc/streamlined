@@ -471,6 +471,13 @@ class PlotPanel(QWidget):
         step to visualize when a config holds several (None = all steps)."""
         lw = self._get_linewidth()
         ms = self._get_markersize()
+        # Grouping keys: the COMMANDED alpha and beta.  case.alphas/betas
+        # hold the MEASURED attitude, which lands a few hundredths off the
+        # commanded angle and differently on every speed step, so grouping
+        # on it splits one sweep angle into several traces.  The measured
+        # arrays stay the plotted/reported values (see TestCase.point_alphas).
+        key_alpha = np.asarray(case.point_alphas, dtype=float)
+        key_beta = np.asarray(case.point_betas, dtype=float)
         beta_xaxis = (x_var == "Beta")
         # A speed variable on x sweeps the tunnel condition, not an angle,
         # so the trace grouping inverts: one trace per (alpha, beta) across
@@ -497,7 +504,7 @@ class PlotPanel(QWidget):
 
             if beta_xaxis:
                 # --- 2D grid, beta on x-axis: one trace per alpha row ---
-                beta_avg = np.mean(case.betas, axis=0)
+                beta_avg = np.mean(key_beta, axis=0)
                 if sel_betas is not None:
                     beta_cols = [j for j in range(n_cols)
                                  if any(np.isclose(beta_avg[j], b, atol=0.15)
@@ -505,7 +512,7 @@ class PlotPanel(QWidget):
                 else:
                     beta_cols = list(range(n_cols))
 
-                alpha_avg = np.mean(case.alphas, axis=1)
+                alpha_avg = np.mean(key_alpha, axis=1)
                 if sel_alphas is not None:
                     alpha_rows = [i for i in range(n_rows)
                                   if any(np.isclose(alpha_avg[i], a, atol=0.15)
@@ -527,7 +534,7 @@ class PlotPanel(QWidget):
                     if len(x_data) == 0 or len(y_data) == 0:
                         continue
 
-                    alpha_val = np.mean(case.alphas[i, :])
+                    alpha_val = np.mean(key_alpha[i, :])
                     if single_alpha:
                         label = case.name
                     else:
@@ -556,14 +563,14 @@ class PlotPanel(QWidget):
 
             # Determine which columns (betas) to plot
             if sel_betas is not None:
-                beta_avg = np.mean(case.betas, axis=0)
+                beta_avg = np.mean(key_beta, axis=0)
                 beta_cols = [j for j in range(n_cols)
                              if any(np.isclose(beta_avg[j], b, atol=0.15) for b in sel_betas)]
             else:
                 beta_cols = list(range(n_cols))
 
             # Determine which rows (alphas) to include
-            alpha_avg = np.mean(case.alphas, axis=1)
+            alpha_avg = np.mean(key_alpha, axis=1)
             if sel_alphas is not None:
                 alpha_rows = [i for i in range(n_rows)
                               if any(np.isclose(alpha_avg[i], a, atol=0.15) for a in sel_alphas)]
@@ -585,7 +592,7 @@ class PlotPanel(QWidget):
                 if len(x_data) == 0 or len(y_data) == 0:
                     continue
 
-                beta_val = np.mean(case.betas[:, j])
+                beta_val = np.mean(key_beta[:, j])
                 if single_beta:
                     label = case.name
                 else:
@@ -613,25 +620,27 @@ class PlotPanel(QWidget):
             # --- 1D flat data ---
             flat_alpha = case.alphas.flatten()
             flat_beta = case.betas.flatten()
+            grp_alpha = key_alpha.flatten()
+            grp_beta = key_beta.flatten()
 
             if speed_xaxis:
                 # --- 1D, a speed variable on x: one trace per (alpha,
                 # beta), walking across the speed steps ---
                 self._plot_speed_sweep(
-                    case, x_var, y_var, flat_alpha, flat_beta,
-                    sel_alphas, sel_betas, mach_mask_flat, lw, ms)
+                    case, x_var, y_var, sel_alphas, sel_betas,
+                    mach_mask_flat, lw, ms)
                 return
 
             if beta_xaxis:
                 # --- 1D, beta on x-axis: one trace per unique alpha ---
-                beta_mask = np.ones(len(flat_beta), dtype=bool)
+                beta_mask = np.ones(len(grp_beta), dtype=bool)
                 if sel_betas is not None:
-                    beta_mask = np.zeros(len(flat_beta), dtype=bool)
+                    beta_mask = np.zeros(len(grp_beta), dtype=bool)
                     for b in sel_betas:
-                        beta_mask |= np.isclose(flat_beta, b, atol=0.15)
+                        beta_mask |= np.isclose(grp_beta, b, atol=0.15)
 
                 unique_alphas = sorted(
-                    set(round(float(a), 1) for a in flat_alpha))
+                    set(round(float(a), 1) for a in grp_alpha))
 
                 if sel_alphas is not None:
                     unique_alphas = [
@@ -645,7 +654,7 @@ class PlotPanel(QWidget):
                 single_alpha = len(unique_alphas) == 1
 
                 for idx, alpha_val in enumerate(unique_alphas):
-                    alpha_match = np.isclose(flat_alpha, alpha_val, atol=0.15)
+                    alpha_match = np.isclose(grp_alpha, alpha_val, atol=0.15)
                     mask = alpha_match & beta_mask
                     if mach_mask_flat is not None:
                         mask = mask & mach_mask_flat
@@ -653,7 +662,7 @@ class PlotPanel(QWidget):
                     if not np.any(mask):
                         continue
 
-                    sort_order = np.argsort(flat_beta[mask])
+                    sort_order = np.argsort(grp_beta[mask])
                     x_data = self._convert_x(
                         self._get_var_data_1d(case, x_var, mask), x_var
                     )[sort_order]
@@ -691,14 +700,14 @@ class PlotPanel(QWidget):
                 return
 
             # Build alpha mask (applies to all beta groups)
-            alpha_mask = np.ones(len(flat_alpha), dtype=bool)
+            alpha_mask = np.ones(len(grp_alpha), dtype=bool)
             if sel_alphas is not None:
-                alpha_mask = np.zeros(len(flat_alpha), dtype=bool)
+                alpha_mask = np.zeros(len(grp_alpha), dtype=bool)
                 for a in sel_alphas:
-                    alpha_mask |= np.isclose(flat_alpha, a, atol=0.15)
+                    alpha_mask |= np.isclose(grp_alpha, a, atol=0.15)
 
             # Determine unique betas to iterate over
-            unique_betas = sorted(set(round(float(b), 1) for b in flat_beta))
+            unique_betas = sorted(set(round(float(b), 1) for b in grp_beta))
 
             if sel_betas is not None:
                 unique_betas = [b for b in unique_betas
@@ -722,7 +731,7 @@ class PlotPanel(QWidget):
             # an alpha sweep.
             machs_flat = np.asarray(
                 getattr(case, 'point_machs', np.array([]))).flatten()
-            have_mach = (machs_flat.size == len(flat_alpha)
+            have_mach = (machs_flat.size == len(grp_alpha)
                          and machs_flat.size > 0)
             if mach_mask_flat is not None:
                 mach_groups = [(sel_mach, mach_mask_flat)]
@@ -738,7 +747,7 @@ class PlotPanel(QWidget):
             trace_idx = 0
             for mach_val, mmask in mach_groups:
                 for beta_val in unique_betas:
-                    beta_mask = np.isclose(flat_beta, beta_val, atol=0.15)
+                    beta_mask = np.isclose(grp_beta, beta_val, atol=0.15)
                     mask = alpha_mask & beta_mask
                     if mmask is not None:
                         mask = mask & mmask
@@ -747,7 +756,7 @@ class PlotPanel(QWidget):
                         continue
 
                     # Sort by alpha within each (speed, beta) group
-                    sort_order = np.argsort(flat_alpha[mask])
+                    sort_order = np.argsort(grp_alpha[mask])
 
                     x_data = self._convert_x(
                         self._get_var_data_1d(case, x_var, mask),
@@ -785,7 +794,6 @@ class PlotPanel(QWidget):
                     trace_idx += 1
 
     def _plot_speed_sweep(self, case: TestCase, x_var: str, y_var: str,
-                          flat_alpha: np.ndarray, flat_beta: np.ndarray,
                           sel_alphas: Optional[List[float]],
                           sel_betas: Optional[List[float]],
                           mach_mask_flat: Optional[np.ndarray],
@@ -800,9 +808,19 @@ class PlotPanel(QWidget):
         Points are ordered by the x variable itself rather than by the
         speed setpoint, so the line never doubles back on a run where the
         tunnel did not settle monotonically.
+
+        The (alpha, beta) a trace belongs to is the COMMANDED pair: the
+        measured attitude differs slightly at each speed step, so pairing
+        on it would give one single-point trace per step instead of one
+        curve per angle - the very failure this path exists to avoid.
         """
+        flat_alpha = np.asarray(case.alphas, dtype=float).flatten()
+        flat_beta = np.asarray(case.betas, dtype=float).flatten()
+        grp_alpha = np.asarray(case.point_alphas, dtype=float).flatten()
+        grp_beta = np.asarray(case.point_betas, dtype=float).flatten()
+
         pairs = []
-        for a, b in zip(flat_alpha, flat_beta):
+        for a, b in zip(grp_alpha, grp_beta):
             key = (round(float(a), 1), round(float(b), 1))
             if key not in pairs:
                 pairs.append(key)
@@ -822,8 +840,8 @@ class PlotPanel(QWidget):
         single_beta = len({p[1] for p in pairs}) == 1
 
         for idx, (alpha_val, beta_val) in enumerate(pairs):
-            mask = (np.isclose(flat_alpha, alpha_val, atol=0.15)
-                    & np.isclose(flat_beta, beta_val, atol=0.15))
+            mask = (np.isclose(grp_alpha, alpha_val, atol=0.15)
+                    & np.isclose(grp_beta, beta_val, atol=0.15))
             if mach_mask_flat is not None:
                 mask = mask & mach_mask_flat
             if not np.any(mask):

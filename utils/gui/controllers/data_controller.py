@@ -495,6 +495,7 @@ class ProcessingWorker(QRunnable):
                 raw_entry['AirOn'] = raw_on.data
                 raw_entry['AirOn']['Time'] = raw_on.time
                 copy_balance_markers(raw_on, raw_entry['AirOn'])
+                self._inject_nominal_setpoints(raw_entry['AirOn'], on_info)
 
                 # Find matching AirOff file by alpha/beta
                 matched = False
@@ -556,6 +557,7 @@ class ProcessingWorker(QRunnable):
                 # leg) aligned to the reduced point order
                 self._attach_point_metadata(case, on_sorted, ss)
                 self._attach_speed_setpoints(case, ss)
+                self._attach_nominal_attitude(case, ss)
 
                 # Store DAQ reference for later use
                 case.daq = daq
@@ -757,6 +759,50 @@ class ProcessingWorker(QRunnable):
         if any(legs):
             case.sweep_dirs = np.array(legs, dtype=str).reshape(
                 case.alphas.shape)
+
+    @staticmethod
+    def _inject_nominal_setpoints(channels: dict, info) -> None:
+        """Ride the point's COMMANDED alpha/beta/speed in with its channels.
+
+        FileInfo carries what the run was ASKED for, read from the file's
+        own metadata, the directory manifest, or the filename.  The
+        reduction needs it because the measured Alpha/Beta channels jitter
+        about the commanded angle, and grouping on the measured value
+        splits one sweep point into several.  They travel as markers (see
+        data_io.BALANCE_MARKER_KEYS) so nothing mistakes them for channels.
+
+        The speed setpoint only fills in when the file recorded no
+        speed_value marker of its own; without it the reduction would fall
+        back to averaging the measured Speed channel.
+        """
+        alpha = getattr(info, 'alpha', None)
+        if alpha is not None:
+            channels['alpha_nominal'] = float(alpha)
+        beta = getattr(info, 'beta', None)
+        if beta is not None:
+            channels['beta_nominal'] = float(beta)
+        speed = getattr(info, 'speed', None)
+        if channels.get('speed_value') is None and speed is not None:
+            channels['speed_value'] = float(speed)
+
+    @staticmethod
+    def _attach_nominal_attitude(case: TestCase, ss) -> None:
+        """Populate case.alpha_nominal / beta_nominal from the reduction.
+
+        reduce_steady_state carries the commanded attitude in the reduced
+        point order and leaves it EMPTY when any point lacked a record, so
+        this only reshapes it onto the case.  A size that would misalign
+        with alphas leaves the arrays empty rather than wrong, and the
+        case then groups on the measured attitude as it always did.
+        """
+        for attr in ('alpha_nominal', 'beta_nominal'):
+            raw = getattr(ss, attr, None)
+            values = (np.asarray(raw, dtype=float) if raw is not None
+                      else np.array([]))
+            if values.size == 0 or values.size != case.alphas.size:
+                setattr(case, attr, np.array([]))
+            else:
+                setattr(case, attr, values.reshape(case.alphas.shape))
 
     @staticmethod
     def _attach_speed_setpoints(case: TestCase, ss) -> None:
@@ -1504,6 +1550,7 @@ class DataController(QObject):
             case.CPitch_std = ss.CPitch_std
             case.CYaw_std = ss.CYaw_std
             self._attach_speed_setpoints(case, ss)
+            self._attach_nominal_attitude(case, ss)
 
             # Re-apply blockage correction (if any) with refreshed data
             self._apply_blockage_to_case(case)

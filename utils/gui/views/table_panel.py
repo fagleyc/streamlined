@@ -1142,16 +1142,23 @@ class TablePanel(QWidget):
         to irregular/incomplete grids. ``axes`` carries the unique
         alpha/beta/mach vectors plus the pre-squeeze dim order and shape.
 
-        The Mach axis comes from ``case.point_machs``, which reports each
-        speed STEP at its mean measured Mach.  The raw per-point Mach
+        The alpha and beta axes come from ``case.point_alphas`` /
+        ``point_betas``, the COMMANDED angles: the measured attitude lands
+        a few hundredths off, and differently on each speed step, so an
+        axis built from it would carry a separate column per reading with
+        one real value in each.  The Mach axis likewise comes from
+        ``case.point_machs``, which reports each speed STEP at its mean
+        measured Mach.  The raw per-point Mach
         cannot define an axis: the tunnel does not hold an exact Mach
         across an alpha sweep, so a 3-speed sweep would yield an 11-wide
         Mach axis and a grid that is mostly NaN, with one real value per
         column.
         """
         try:
-            a = np.asarray(case.alphas, dtype=float).flatten()
-            b = np.asarray(case.betas, dtype=float).flatten()
+            a = np.asarray(getattr(case, 'point_alphas', case.alphas),
+                           dtype=float).flatten()
+            b = np.asarray(getattr(case, 'point_betas', case.betas),
+                           dtype=float).flatten()
             m = np.asarray(getattr(case, 'point_machs', np.array([])),
                            dtype=float).flatten()
         except Exception:

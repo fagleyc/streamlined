@@ -6,7 +6,7 @@ Shared metadata template used across the wind-tunnel software ecosystem
 contact, and a compact version history (newest first).
 """
 
-__version__ = "1.3.1"
+__version__ = "1.3.2"
 APP_NAME = "Streamlined"
 AUTHOR = "C. Fagley"
 CONTACT = "casey.fagley@afacademy.af.edu"
@@ -15,6 +15,11 @@ CONTACT = "casey.fagley@afacademy.af.edu"
 # Dates for 1.2.4+ from the repository history; earlier dates from the
 # archived release zips in Versions/.
 VERSION_HISTORY = [
+    ("1.3.2", "2026-09-12",
+     "Alpha, beta and Mach groups come from the COMMANDED value the "
+     "run recorded, not the measured reading, so positioner jitter no "
+     "longer splits one sweep angle into extra traces, filter entries "
+     "and export columns"),
     ("1.3.1", "2026-09-09",
      "Alpha/beta attitude offsets in the model geometry (bent-sting "
      "rectification): added to every point's recorded attitude, "

@@ -158,6 +158,14 @@ class TestCase:
     run_numbers: np.ndarray = field(default_factory=lambda: np.array([]))
     sweep_dirs: np.ndarray = field(default_factory=lambda: np.array([]))
 
+    # Per-point COMMANDED alpha/beta, same shape and point order as
+    # self.alphas.  These are the grouping keys: self.alphas/self.betas
+    # hold the MEASURED attitude, which jitters about the commanded one
+    # and fragments a sweep when rounded (see self.point_alphas).  Empty
+    # when the runs carried no commanded record.
+    alpha_nominal: np.ndarray = field(default_factory=lambda: np.array([]))
+    beta_nominal: np.ndarray = field(default_factory=lambda: np.array([]))
+
     # Per-point tunnel-speed SETPOINT (the speed commanded for that
     # point), same shape and point order as self.alphas.  This, not the
     # measured Mach, is what identifies which step of a speed sweep a
@@ -235,6 +243,38 @@ class TestCase:
         return (len(self.tunnel_conditions.Q) > 0 or
                 self.mach_number is not None or
                 len(self.machs) > 0)
+
+    def _grouping_attitude(self, nominal: np.ndarray,
+                           measured: np.ndarray) -> np.ndarray:
+        """One attitude array to group and filter by, shaped like alphas.
+
+        Prefers the COMMANDED angle the run recorded.  The positioner
+        does not land exactly on it - a commanded 4.0 deg records as
+        3.93 on one speed step and 3.96 on the next - so grouping on the
+        measured value splits one angle of the sweep into two traces,
+        two filter entries and two export columns.  The commanded value
+        is one number for the whole set of points taken there.
+
+        Falls back to the measured attitude when no commanded record
+        exists (legacy runs), which is the historical behavior.
+        """
+        nominal = np.asarray(nominal, dtype=float)
+        measured = np.asarray(measured, dtype=float)
+        if nominal.size != measured.size or nominal.size == 0:
+            return measured
+        if np.isnan(nominal).any():
+            return measured
+        return nominal.reshape(measured.shape)
+
+    @property
+    def point_alphas(self) -> np.ndarray:
+        """Per-point alpha to GROUP and FILTER by: the COMMANDED angle."""
+        return self._grouping_attitude(self.alpha_nominal, self.alphas)
+
+    @property
+    def point_betas(self) -> np.ndarray:
+        """Per-point beta to GROUP and FILTER by: the COMMANDED angle."""
+        return self._grouping_attitude(self.beta_nominal, self.betas)
 
     @property
     def point_machs(self) -> np.ndarray:
@@ -565,27 +605,39 @@ class CaseCollection:
 
     @property
     def all_beta_values(self) -> List[float]:
-        """Get all unique beta values across cases (rounded to 1 decimal)."""
+        """Unique beta values across cases, as COMMANDED (1 decimal).
+
+        Enumerated from case.point_betas, so a sweep offers one entry per
+        commanded angle rather than one per measured reading (see
+        TestCase.point_betas).
+        """
         betas = set()
         for case in self:
             if case.has_data:
-                if case.betas.ndim == 2:
-                    betas.update(round(float(v), 1) for v in np.mean(case.betas, axis=0))
+                keys = case.point_betas
+                if keys.ndim == 2:
+                    betas.update(round(float(v), 1)
+                                 for v in np.mean(keys, axis=0))
                 else:
-                    betas.update(round(float(v), 1) for v in case.betas.flatten())
+                    betas.update(round(float(v), 1) for v in keys.flatten())
         return sorted(betas)
 
     @property
     def all_alpha_values(self) -> List[float]:
-        """Get all unique alpha values across cases (rounded to 1 decimal)."""
+        """Unique alpha values across cases, as COMMANDED (1 decimal).
+
+        Enumerated from case.point_alphas (see TestCase.point_alphas).
+        """
         alphas = set()
         for case in self:
             if case.has_data:
-                if case.alphas.ndim == 2:
+                keys = case.point_alphas
+                if keys.ndim == 2:
                     # 2D: each row is one alpha; take row mean
-                    alphas.update(round(float(v), 1) for v in np.mean(case.alphas, axis=1))
+                    alphas.update(round(float(v), 1)
+                                  for v in np.mean(keys, axis=1))
                 else:
-                    alphas.update(round(float(v), 1) for v in case.alphas.flatten())
+                    alphas.update(round(float(v), 1) for v in keys.flatten())
         return sorted(alphas)
 
     @property

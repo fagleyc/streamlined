@@ -40,6 +40,13 @@ class ReducedDataPoint:
     speed_value: Optional[float] = None
     speed_unit: Optional[str] = None
     speed_setpoints: Optional[Any] = None
+    # The COMMANDED attitude for this point, as the run recorded it
+    # (meta.run / the directory manifest / the filename). The measured
+    # Alpha/Beta channels jitter about it by a few hundredths, so the
+    # commanded value is what identifies WHICH sweep point this is.
+    # None when the run carried no such record.
+    alpha_nominal: Optional[float] = None
+    beta_nominal: Optional[float] = None
     time: np.ndarray = field(default_factory=lambda: np.array([]))
     air_on: Dict[str, Any] = field(default_factory=dict)
     air_off: Dict[str, Any] = field(default_factory=dict)
@@ -60,6 +67,12 @@ class SteadyStateData:
     betas: np.ndarray = field(default_factory=lambda: np.array([]))
     # Tunnel speed setting per point (organization axis after alpha/beta)
     speeds: np.ndarray = field(default_factory=lambda: np.array([]))
+    # COMMANDED alpha/beta per point, same shape as alphas/betas. These
+    # are the grouping keys (see ReducedDataPoint.alpha_nominal); EMPTY
+    # when any point of the set carried no commanded record, so a
+    # consumer either gets a complete key array or none at all.
+    alpha_nominal: np.ndarray = field(default_factory=lambda: np.array([]))
+    beta_nominal: np.ndarray = field(default_factory=lambda: np.array([]))
     # Distinct speeds swept (surfaces a multi-velocity sweep) + its unit
     speed_setpoints: np.ndarray = field(default_factory=lambda: np.array([]))
     speed_unit: Optional[str] = None
@@ -153,6 +166,18 @@ def reduce_single_point(raw_on: Dict[str, np.ndarray],
                           if speed_value is not None else None)
     result.speed_unit = raw_on.get('speed_unit')
     result.speed_setpoints = raw_on.get('speed_setpoints')
+
+    # Commanded attitude markers (injected from the run's own record).
+    # Kept separate from result.alpha/beta, which stay the MEASURED
+    # attitude the model actually flew at.
+    for marker, attr in (('alpha_nominal', 'alpha_nominal'),
+                         ('beta_nominal', 'beta_nominal')):
+        value = raw_on.get(marker)
+        if value is not None:
+            try:
+                setattr(result, attr, float(value))
+            except (TypeError, ValueError):
+                pass
 
     # Get position data from AirOFF (may differ from AirON if using a
     # single tare).  The sting is just as bent with the wind off, so the
@@ -346,9 +371,28 @@ def reduce_steady_state(reduced_data: List[ReducedDataPoint]) -> SteadyStateData
     CPitch_std = np.array([np.std(rd.coeffs.CPitch) for rd in reduced_data])
     CYaw_std = np.array([np.std(rd.coeffs.CYaw) for rd in reduced_data])
 
-    # Round alpha and beta for sorting
-    alpha_int = np.round(alphas * 2) / 2
-    beta_int = np.round(betas * 2) / 2
+    # Sort/group keys: the COMMANDED alpha and beta where the run
+    # recorded them, else the measured value rounded to the nearest half
+    # degree (the historical behavior).  Grouping on the raw measured
+    # attitude fragments a sweep: a commanded 4.0 that records as 3.94 on
+    # one speed step and 3.96 on the next is ONE angle, but rounds to two.
+    alpha_nom = np.array([
+        rd.alpha_nominal if getattr(rd, 'alpha_nominal', None) is not None
+        else np.nan for rd in reduced_data], dtype=float)
+    beta_nom = np.array([
+        rd.beta_nominal if getattr(rd, 'beta_nominal', None) is not None
+        else np.nan for rd in reduced_data], dtype=float)
+    # Each axis stands on its own: a pure alpha sweep records a
+    # commanded alpha and nothing for beta, and that alpha is still a
+    # perfectly good key.  A PARTIAL record is refused though - one point
+    # missing its command would silently group under a fallback value.
+    have_alpha_nom = not np.isnan(alpha_nom).any()
+    have_beta_nom = not np.isnan(beta_nom).any()
+
+    alpha_int = np.where(np.isnan(alpha_nom), np.round(alphas * 2) / 2,
+                         alpha_nom)
+    beta_int = np.where(np.isnan(beta_nom), np.round(betas * 2) / 2,
+                        beta_nom)
     # NaN speeds (points with no marker) collapse to 0.0 for ordering
     speed_sort = np.where(np.isnan(speeds), 0.0, speeds)
 
@@ -388,6 +432,10 @@ def reduce_steady_state(reduced_data: List[ReducedDataPoint]) -> SteadyStateData
         ss.alphas = alphas[sort_idx].reshape(n_alpha, n_beta)
         ss.betas = betas[sort_idx].reshape(n_alpha, n_beta)
         ss.speeds = speeds[sort_idx].reshape(n_alpha, n_beta)
+        if have_alpha_nom:
+            ss.alpha_nominal = alpha_nom[sort_idx].reshape(n_alpha, n_beta)
+        if have_beta_nom:
+            ss.beta_nominal = beta_nom[sort_idx].reshape(n_alpha, n_beta)
         ss.Cl = Cl[sort_idx].reshape(n_alpha, n_beta)
         ss.Cd = Cd[sort_idx].reshape(n_alpha, n_beta)
         ss.Cs = Cs[sort_idx].reshape(n_alpha, n_beta)
@@ -405,6 +453,10 @@ def reduce_steady_state(reduced_data: List[ReducedDataPoint]) -> SteadyStateData
         ss.alphas = alphas[sort_idx]
         ss.betas = betas[sort_idx]
         ss.speeds = speeds[sort_idx]
+        if have_alpha_nom:
+            ss.alpha_nominal = alpha_nom[sort_idx]
+        if have_beta_nom:
+            ss.beta_nominal = beta_nom[sort_idx]
         ss.Cl = Cl[sort_idx]
         ss.Cd = Cd[sort_idx]
         ss.Cs = Cs[sort_idx]

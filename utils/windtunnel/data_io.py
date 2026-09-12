@@ -944,7 +944,7 @@ def read_mat_file(filepath: str) -> Tuple[RawData, Dict[str, Any]]:
 # them or it will try to take len() of a 0-d value.
 BALANCE_MARKER_KEYS = ('balance_type', 'load_units', 'span_config',
                        'speed_value', 'speed_unit', 'speed_setpoints',
-                       'channel_cal')
+                       'channel_cal', 'alpha_nominal', 'beta_nominal')
 
 
 def copy_balance_markers(raw: RawData,
