@@ -148,6 +148,52 @@ def group_files_simple(files: list) -> Dict[str, Dict[str, list]]:
     return grouped
 
 
+def attach_nominal_attitude(case: TestCase, ss) -> None:
+    """Populate case.alpha_nominal / beta_nominal from the reduction.
+
+    reduce_steady_state carries the commanded attitude in the reduced
+    point order and leaves it EMPTY when any point lacked a record, so
+    this only reshapes it onto the case.  A size that would misalign
+    with alphas leaves the arrays empty rather than wrong, and the case
+    then groups on the measured attitude as it always did.
+
+    Module level because BOTH paths that reduce a case need it: the
+    worker on first load, and DataController.reprocess_case when a
+    geometry edit re-reduces.
+    """
+    for attr in ('alpha_nominal', 'beta_nominal'):
+        raw = getattr(ss, attr, None)
+        values = (np.asarray(raw, dtype=float) if raw is not None
+                  else np.array([]))
+        if values.size == 0 or values.size != case.alphas.size:
+            setattr(case, attr, np.array([]))
+        else:
+            setattr(case, attr, values.reshape(case.alphas.shape))
+
+
+def attach_speed_setpoints(case: TestCase, ss) -> None:
+    """Populate case.speeds / case.speed_unit, one setpoint per point.
+
+    The setpoint is the speed COMMANDED for a point, which is what
+    identifies the step of a speed sweep it belongs to; the measured
+    Mach drifts within a step and cannot group them (see
+    TestCase.point_machs).  reduce_steady_state already carries the
+    setpoints in ss.speeds in the reduced point order, so this only
+    reshapes them onto the case.  A size that would misalign with
+    alphas leaves case.speeds EMPTY rather than wrong.
+
+    Module level for the same reason as attach_nominal_attitude.
+    """
+    case.speed_unit = str(getattr(ss, 'speed_unit', '') or '')
+    raw = getattr(ss, 'speeds', None)
+    speeds = (np.asarray(raw, dtype=float) if raw is not None
+              else np.array([]))
+    if speeds.size == 0 or speeds.size != case.alphas.size:
+        case.speeds = np.array([])
+        return
+    case.speeds = speeds.reshape(case.alphas.shape)
+
+
 class ProcessingWorker(QRunnable):
     """Worker for background data processing."""
 
@@ -556,8 +602,8 @@ class ProcessingWorker(QRunnable):
                 # Per-point acquisition metadata (run number, hysteresis
                 # leg) aligned to the reduced point order
                 self._attach_point_metadata(case, on_sorted, ss)
-                self._attach_speed_setpoints(case, ss)
-                self._attach_nominal_attitude(case, ss)
+                attach_speed_setpoints(case, ss)
+                attach_nominal_attitude(case, ss)
 
                 # Store DAQ reference for later use
                 case.daq = daq
@@ -787,46 +833,6 @@ class ProcessingWorker(QRunnable):
         unit = getattr(info, 'speed_unit', None)
         if not channels.get('speed_unit') and unit:
             channels['speed_unit'] = str(unit)
-
-    @staticmethod
-    def _attach_nominal_attitude(case: TestCase, ss) -> None:
-        """Populate case.alpha_nominal / beta_nominal from the reduction.
-
-        reduce_steady_state carries the commanded attitude in the reduced
-        point order and leaves it EMPTY when any point lacked a record, so
-        this only reshapes it onto the case.  A size that would misalign
-        with alphas leaves the arrays empty rather than wrong, and the
-        case then groups on the measured attitude as it always did.
-        """
-        for attr in ('alpha_nominal', 'beta_nominal'):
-            raw = getattr(ss, attr, None)
-            values = (np.asarray(raw, dtype=float) if raw is not None
-                      else np.array([]))
-            if values.size == 0 or values.size != case.alphas.size:
-                setattr(case, attr, np.array([]))
-            else:
-                setattr(case, attr, values.reshape(case.alphas.shape))
-
-    @staticmethod
-    def _attach_speed_setpoints(case: TestCase, ss) -> None:
-        """Populate case.speeds, one tunnel-speed setpoint per point.
-
-        The setpoint is the speed COMMANDED for a point, which is what
-        identifies the step of a speed sweep it belongs to; the measured
-        Mach drifts within a step and cannot group them (see
-        TestCase.point_machs).  reduce_steady_state already carries the
-        setpoints in ss.speeds in the reduced point order, so this only
-        reshapes them onto the case.  A size that would misalign with
-        alphas leaves case.speeds EMPTY rather than wrong.
-        """
-        case.speed_unit = str(getattr(ss, 'speed_unit', '') or '')
-        raw = getattr(ss, 'speeds', None)
-        speeds = (np.asarray(raw, dtype=float) if raw is not None
-                  else np.array([]))
-        if speeds.size == 0 or speeds.size != case.alphas.size:
-            case.speeds = np.array([])
-            return
-        case.speeds = speeds.reshape(case.alphas.shape)
 
     def _create_case_from_files(self, case_name: str, config_name: str,
                                  files: list, alphas: list, betas: list,
@@ -1553,8 +1559,8 @@ class DataController(QObject):
             case.CRoll_std = ss.CRoll_std
             case.CPitch_std = ss.CPitch_std
             case.CYaw_std = ss.CYaw_std
-            self._attach_speed_setpoints(case, ss)
-            self._attach_nominal_attitude(case, ss)
+            attach_speed_setpoints(case, ss)
+            attach_nominal_attitude(case, ss)
 
             # Re-apply blockage correction (if any) with refreshed data
             self._apply_blockage_to_case(case)

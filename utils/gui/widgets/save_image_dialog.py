@@ -18,7 +18,7 @@ from PyQt6.QtWidgets import (
     QPushButton, QFileDialog, QScrollArea, QWidget,
     QSpinBox, QSizePolicy, QCheckBox, QColorDialog, QToolButton
 )
-from PyQt6.QtCore import Qt, QSettings
+from PyQt6.QtCore import Qt, QSettings, QRectF
 from PyQt6.QtGui import QColor, QFont
 
 try:
@@ -695,6 +695,32 @@ class SaveImageDialog(QDialog):
         self._export_to_file(filepath)
         self.accept()
 
+    @staticmethod
+    def _visible_items_rect(scene) -> QRectF:
+        """The scene rect covering only what is actually drawn.
+
+        QGraphicsScene.itemsBoundingRect() measures HIDDEN items too, and
+        the canvas keeps a hidden crosshair readout whose stale geometry
+        runs to tens of thousands of pixels.  Measuring that inflates the
+        export's aspect ratio and the figure lands as a thin band in a
+        mostly empty image.
+
+        Only visible items are measured, and the whole scene is measured
+        rather than the plot item alone: the axis LABELS are siblings of
+        the plot item and sit outside its rect, so measuring the plot
+        item would crop them off.
+        """
+        rect = QRectF()
+        for item in scene.items():
+            if not item.isVisible():
+                continue
+            item_rect = item.sceneBoundingRect()
+            if item_rect.isValid():
+                rect = (item_rect if rect.isNull()
+                        else rect.united(item_rect))
+        # Nothing visible at all (never in practice) -> old behavior
+        return rect if not rect.isNull() else scene.itemsBoundingRect()
+
     def _export_to_file(self, filepath: str):
         """Apply theme and trace settings to the actual plot, export, then restore."""
         theme_name = self.cmb_theme.currentText()
@@ -836,14 +862,16 @@ class SaveImageDialog(QDialog):
             # Render scene directly to QImage — captures all labels without
             # the QGraphicsView widget frame border
             from PyQt6.QtGui import QImage, QPainter
-            from PyQt6.QtCore import QRectF
 
             scene = self._plot_widget.scene()
-            source_rect = scene.itemsBoundingRect()
+            source_rect = self._visible_items_rect(scene)
 
+            # The aspect MUST come from the same rect that is rendered:
+            # scene.render() keeps the aspect ratio, so measuring one rect
+            # and rendering another leaves the difference as blank canvas.
             target_width = self.spn_width.value()
             aspect = source_rect.height() / max(source_rect.width(), 1.0)
-            target_height = int(target_width * aspect)
+            target_height = max(1, int(round(target_width * aspect)))
 
             image = QImage(target_width, target_height,
                            QImage.Format.Format_ARGB32)
@@ -859,7 +887,8 @@ class SaveImageDialog(QDialog):
             painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
             scene.render(painter,
                          QRectF(0, 0, target_width, target_height),
-                         source_rect)
+                         source_rect,
+                         Qt.AspectRatioMode.KeepAspectRatio)
             painter.end()
 
             image.save(filepath)

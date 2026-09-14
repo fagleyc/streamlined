@@ -198,7 +198,8 @@ class TestFallbacks:
 
 class TestSpeedUnitReachesTheCase:
     def test_the_controller_attaches_it(self):
-        from utils.gui.controllers.data_controller import ProcessingWorker
+        from utils.gui.controllers.data_controller import (
+            attach_speed_setpoints)
 
         class _SS:
             speeds = np.array([0.2, 0.2, 0.3, 0.3])
@@ -206,13 +207,14 @@ class TestSpeedUnitReachesTheCase:
 
         case = Case(id="c", name="c")
         case.alphas = np.array([0.0, 2.0, 0.0, 2.0])
-        ProcessingWorker._attach_speed_setpoints(case, _SS())
+        attach_speed_setpoints(case, _SS())
         assert case.speed_unit == 'mach'
         np.testing.assert_allclose(np.ravel(case.speeds),
                                    [0.2, 0.2, 0.3, 0.3])
 
     def test_a_missing_unit_is_an_empty_string_not_none(self):
-        from utils.gui.controllers.data_controller import ProcessingWorker
+        from utils.gui.controllers.data_controller import (
+            attach_speed_setpoints)
 
         class _SS:
             speeds = np.array([0.2, 0.2])
@@ -220,7 +222,7 @@ class TestSpeedUnitReachesTheCase:
 
         case = Case(id="c", name="c")
         case.alphas = np.array([0.0, 2.0])
-        ProcessingWorker._attach_speed_setpoints(case, _SS())
+        attach_speed_setpoints(case, _SS())
         assert case.speed_unit == ''
 
     def test_the_injector_carries_the_unit_in(self):

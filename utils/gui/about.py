@@ -6,7 +6,7 @@ Shared metadata template used across the wind-tunnel software ecosystem
 contact, and a compact version history (newest first).
 """
 
-__version__ = "1.3.3"
+__version__ = "1.3.4"
 APP_NAME = "Streamlined"
 AUTHOR = "C. Fagley"
 CONTACT = "casey.fagley@afacademy.af.edu"
@@ -15,6 +15,10 @@ CONTACT = "casey.fagley@afacademy.af.edu"
 # Dates for 1.2.4+ from the repository history; earlier dates from the
 # archived release zips in Versions/.
 VERSION_HISTORY = [
+    ("1.3.4", "2026-09-14",
+     "Fix re-reducing a loaded case (adding an alpha offset after "
+     "loading raised AttributeError), and fix raster figure export "
+     "measuring hidden items and writing a huge mostly-empty image"),
     ("1.3.3", "2026-09-14",
      "Mach steps key and label on the COMMANDED Mach like alpha and "
      "beta do, so runs held a thousandth apart no longer split into "
