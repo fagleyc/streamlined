@@ -166,6 +166,11 @@ class TestCase:
     alpha_nominal: np.ndarray = field(default_factory=lambda: np.array([]))
     beta_nominal: np.ndarray = field(default_factory=lambda: np.array([]))
 
+    # Unit the speed SETPOINTS are expressed in: 'mach', 'hz', 'ft/s',
+    # 'm/s' or 'rpm'.  Only a 'mach' setpoint can be reported as a Mach
+    # number; the others identify a step but say nothing about Mach.
+    speed_unit: str = ''
+
     # Per-point tunnel-speed SETPOINT (the speed commanded for that
     # point), same shape and point order as self.alphas.  This, not the
     # measured Mach, is what identifies which step of a speed sweep a
@@ -278,7 +283,7 @@ class TestCase:
 
     @property
     def point_machs(self) -> np.ndarray:
-        """Per-point Mach to GROUP and FILTER speed steps by.
+        """Per-point Mach to GROUP and FILTER by: the COMMANDED Mach.
 
         A speed step is identified by the setpoint that was commanded,
         not by the Mach the tunnel actually held.  Within a single step
@@ -305,6 +310,19 @@ class TestCase:
         speeds = np.asarray(self.speeds, dtype=float).ravel()
         if speeds.size != n_pts:
             return machs
+
+        # A Mach setpoint is reported as-is, exactly as point_alphas
+        # reports the commanded angle.  Two runs commanded to the same
+        # Mach that held it a thousandth apart are ONE condition and have
+        # to offer one filter entry, which an average of what each
+        # measured cannot guarantee.  A run commanded in Hz or RPM has no
+        # Mach setpoint to report, so it falls through to labelling each
+        # step with its own mean measured Mach - still one per step.
+        if str(self.speed_unit).strip().lower() == 'mach':
+            commanded = np.round(speeds, 3)
+            # A point with no setpoint keeps its measured value rather
+            # than becoming NaN and dropping out of every group.
+            return np.where(np.isnan(speeds), machs, commanded)
 
         grouped = machs.copy()
         for setpoint in np.unique(speeds[~np.isnan(speeds)]):

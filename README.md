@@ -669,9 +669,28 @@ and two mostly-empty columns in the MATLAB export.
 The commanded value is a single number for every point taken at that
 angle, so it is the grouping key throughout: plot traces, the alpha/beta
 filters, the `Axes.alpha` / `Axes.beta` vectors of the MAT/HDF5 export,
-and the grid detection in `reduce_steady_state`. The same rule applies to
-speed: the commanded setpoint identifies a Mach step, and each step is
-labelled with its mean measured Mach.
+and the grid detection in `reduce_steady_state`.
+
+Speed follows the same rule. The commanded setpoint identifies a step,
+and when that setpoint IS a Mach it is also what the Mach filter offers:
+two runs commanded to M0.2 that held 0.205 and 0.207 are one condition
+and get one entry, which an average of what each measured cannot
+guarantee. A run commanded in Hz or RPM has no Mach setpoint to report,
+so each of its steps is labelled with its own mean measured Mach
+instead - still one value per step.
+
+Because the label is the command, a run whose filenames say `mach_1.00`
+is reported as M=1.000 even if the tunnel ran it at 0.09. That is a
+labelling fault in the acquisition, and surfacing it is deliberate; the
+Mach the tunnel actually held is in the data table and on the X Axis
+picker.
+
+Speed setpoints are read from the `{Hz|ftps|mps|RPM|mach}_<value>` token
+Freestream writes, and from the legacy bare `M0p25` / `M0.30` token that
+older TDMS runs carry. The legacy token has to be delimited and to have a
+decimal separator, so a configuration code such as `WPM0` is not mistaken
+for a speed and a bare `M0` is not read as Mach 0 (which would classify
+the run as a tare).
 
 The measured attitude is never overwritten. It is what the plot puts on
 the x axis, what the data table shows, and what `Position.Alpha` holds in

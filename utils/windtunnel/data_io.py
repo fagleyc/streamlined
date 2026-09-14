@@ -321,6 +321,13 @@ def extract_speed_from_filename(filepath: str) -> Tuple[Optional[float],
                           re.IGNORECASE)
         if match:
             return float(match.group(1)), unit
+
+    # Legacy bare Mach token (M0p25) as a last resort, so a TDMS run
+    # named the old way still carries a speed SETPOINT and groups on it
+    # instead of on the Mach the tunnel happened to hold.
+    mach = extract_mach_from_filename(filepath)
+    if mach is not None:
+        return mach, 'mach'
     return None, None
 
 
@@ -1782,7 +1789,20 @@ def extract_mach_from_filename(filepath: str) -> Optional[float]:
 
     filename = Path(filepath).stem
     mach_match = re.search(r'mach[_\s]*(-?\d+\.?\d*)', filename, re.IGNORECASE)
-    return float(mach_match.group(1)) if mach_match else None
+    if mach_match:
+        return float(mach_match.group(1))
+
+    # Legacy convention: a bare M<int>p<frac> / M<int>.<frac> token, as in
+    # 'DrpPd3_NB1_TF1_R01_M0p25_Sp26_Alpha_-10.0'.  The token has to be
+    # delimited and to carry a decimal separator: that is what keeps it
+    # from matching a configuration code (the M of 'WPM0' is not preceded
+    # by a delimiter) and from reading a bare 'M0' as Mach 0, which would
+    # then classify the run as a tare.
+    legacy = re.search(r'(?:^|[_\s-])M(\d+)[p.](\d+)(?=$|[_\s-])',
+                       filename)
+    if legacy:
+        return float('{0}.{1}'.format(legacy.group(1), legacy.group(2)))
+    return None
 
 
 def extract_alpha_beta_from_filename(filepath: str) -> Tuple[float, float]:

@@ -784,6 +784,9 @@ class ProcessingWorker(QRunnable):
         speed = getattr(info, 'speed', None)
         if channels.get('speed_value') is None and speed is not None:
             channels['speed_value'] = float(speed)
+        unit = getattr(info, 'speed_unit', None)
+        if not channels.get('speed_unit') and unit:
+            channels['speed_unit'] = str(unit)
 
     @staticmethod
     def _attach_nominal_attitude(case: TestCase, ss) -> None:
@@ -816,6 +819,7 @@ class ProcessingWorker(QRunnable):
         reshapes them onto the case.  A size that would misalign with
         alphas leaves case.speeds EMPTY rather than wrong.
         """
+        case.speed_unit = str(getattr(ss, 'speed_unit', '') or '')
         raw = getattr(ss, 'speeds', None)
         speeds = (np.asarray(raw, dtype=float) if raw is not None
                   else np.array([]))

@@ -6,7 +6,7 @@ Shared metadata template used across the wind-tunnel software ecosystem
 contact, and a compact version history (newest first).
 """
 
-__version__ = "1.3.2"
+__version__ = "1.3.3"
 APP_NAME = "Streamlined"
 AUTHOR = "C. Fagley"
 CONTACT = "casey.fagley@afacademy.af.edu"
@@ -15,6 +15,11 @@ CONTACT = "casey.fagley@afacademy.af.edu"
 # Dates for 1.2.4+ from the repository history; earlier dates from the
 # archived release zips in Versions/.
 VERSION_HISTORY = [
+    ("1.3.3", "2026-09-14",
+     "Mach steps key and label on the COMMANDED Mach like alpha and "
+     "beta do, so runs held a thousandth apart no longer split into "
+     "extra filter entries; legacy M0p25 filename tokens are read as "
+     "a Mach setpoint"),
     ("1.3.2", "2026-09-12",
      "Alpha, beta and Mach groups come from the COMMANDED value the "
      "run recorded, not the measured reading, so positioner jitter no "
