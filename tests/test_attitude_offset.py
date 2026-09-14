@@ -77,50 +77,119 @@ class TestReductionAppliesTheOffset:
         assert np.allclose(np.mean(plain.wrf_aero.Lift),
                            np.mean(zero.wrf_aero.Lift))
 
-    def test_offset_point_reduces_like_a_point_recorded_at_that_angle(
-            self):
-        # The whole purpose: (recorded 0, offset 12) == (recorded 12, no
-        # offset), in the reduced loads and not just the reported angle.
-        on0, off0 = _point(alpha=0.0)
-        on12, off12 = _point(alpha=12.0)
-        corrected = _reduce(on0, off0, alpha_offset=12.0)
-        reference = _reduce(on12, off12)
-        for ch in ("Lift", "Drag", "Side"):
-            assert np.allclose(np.mean(getattr(corrected.wrf_aero, ch)),
-                               np.mean(getattr(reference.wrf_aero, ch))), ch
-        assert np.allclose(np.mean(corrected.coeffs.Cl),
-                           np.mean(reference.coeffs.Cl))
+    def test_an_external_offset_moves_only_the_reported_angle(self):
+        """An offset moves the model on its mount, not the balance.
 
-    def test_offset_actually_moves_the_loads(self):
-        # Guard against the previous test passing trivially: at half span
-        # the resolved loads depend on alpha, so 12 deg must differ from 0.
+        resolve_external_wrf rotates out of the balance's own axes, and
+        the external balance is bolted to the turntable: the angle that
+        rotation needs is the one the positioner recorded.  Feeding the
+        offset in swings lift into the drag axis.
+
+        Measured on the B52 half-span run: a 6 deg offset laid 2.2 lbf
+        of spurious drag on top of a real 1.4 lbf, nearly tripling CD
+        and dropping max L/D from 15.6 to 5.9 while CL barely moved.
+        """
         on, off = _point(alpha=0.0)
         plain = _reduce(on, off)
         bent = _reduce(on, off, alpha_offset=12.0)
-        assert not np.allclose(np.mean(plain.wrf_aero.Lift),
-                               np.mean(bent.wrf_aero.Lift))
 
-    def test_the_tare_attitude_is_offset_too(self):
-        # A tare taken at a different recorded attitude is rotated by ITS
-        # alpha; the sting is just as bent then, so it gets the offset.
+        # The reported incidence moves ...
+        assert np.allclose(np.mean(plain.alpha), 0.0)
+        assert np.allclose(np.mean(bent.alpha), 12.0)
+        # ... and nothing else does.
+        for ch in ("Lift", "Drag", "Side"):
+            assert np.allclose(np.mean(getattr(plain.wrf_aero, ch)),
+                               np.mean(getattr(bent.wrf_aero, ch))), ch
+
+    def test_the_external_resolution_uses_the_recorded_angle(self):
+        from unittest import mock
+        import utils.windtunnel.reduction as red
+
+        seen = []
+        real = red.resolve_external_wrf
+
+        def spy(raw, alpha_deg=None, **kw):
+            seen.append(float(np.mean(np.asarray(alpha_deg, dtype=float))))
+            return real(raw, alpha_deg=alpha_deg, **kw)
+
+        on, off = _point(alpha=3.0)
+        with mock.patch.object(red, 'resolve_external_wrf', spy):
+            _reduce(on, off, alpha_offset=5.0)
+
+        assert seen, "resolve_external_wrf was never called"
+        assert all(abs(s - 3.0) < 1e-9 for s in seen), seen
+
+    def test_the_external_mrc_transfer_uses_the_recorded_angle(self):
+        from unittest import mock
+        import utils.windtunnel.reduction as red
+
+        seen = []
+        real = red.transfer_external_loads_to_mrc
+
+        def spy(wrf, alpha, beta, mshift, **kw):
+            seen.append(float(np.mean(np.asarray(alpha, dtype=float))))
+            return real(wrf, alpha, beta, mshift, **kw)
+
+        on, off = _point(alpha=3.0)
+        with mock.patch.object(red, 'transfer_external_loads_to_mrc', spy):
+            _reduce(on, off, alpha_offset=5.0)
+
+        assert seen, "transfer_external_loads_to_mrc was never called"
+        assert all(abs(s - 3.0) < 1e-9 for s in seen), seen
+
+    def test_an_internal_balance_rotates_by_the_corrected_angle(self):
+        """The internal path is the opposite case, and is unchanged.
+
+        An internal balance sits inside the model and bends with it, so
+        its body axes ARE the model's and the body-to-wind rotation is
+        by the angle the model actually flies at.
+        """
+        from unittest import mock
+        import utils.windtunnel.reduction as red
+
+        seen = []
+        real = red.calc_wrf_forces
+
+        def spy(brf, alpha, beta):
+            seen.append(float(np.mean(np.asarray(alpha, dtype=float))))
+            return real(brf, alpha, beta)
+
+        # Bridge-volt channels with no external marker -> internal path
+        n = 8
+        bridge = ('N1', 'N2', 'Y1', 'Y2', 'Axial', 'Roll')
+        on = {name: np.full(n, 0.1) for name in bridge}
+        on.update({"Alpha": np.full(n, 3.0), "Beta": np.zeros(n),
+                   "Pdiff": np.full(n, 0.8), "Ptot": np.full(n, 12.2),
+                   "Temp": np.full(n, 295.0)})
+        off = {k: (np.zeros(n) if k in bridge else v)
+               for k, v in on.items()}
+
+        from utils.windtunnel.calibration import balance_cal_from_matrix
+        cal = balance_cal_from_matrix(np.eye(6), 'Linear',
+                                      distances=[1.0, 1.0, 1.0, 1.0])
+        geo = Geometry(C=2.86, S=18.75, b=6.0, mshift=np.zeros(3),
+                       alpha_offset=5.0)
+        with mock.patch.object(red, 'calc_wrf_forces', spy):
+            reduce_single_point(on, off, cal=cal, geo=geo,
+                                pressure_cal={}, facility='SWT')
+
+        assert seen, "calc_wrf_forces was never called (not internal?)"
+        assert all(abs(s - 8.0) < 1e-9 for s in seen), seen
+
+    def test_the_tare_keeps_its_own_recorded_attitude(self):
+        # A tare taken at a different recorded attitude resolves by ITS
+        # own recorded angle, so the subtraction still lines up.
         n = 16
         on, _ = _point(alpha=12.0, n=n)
         off = {k: (np.zeros(n) if k in CHANNELS else v)
                for k, v in on.items()}
         off["Alpha"] = np.zeros(n)
-        # Give the tare a real load so its rotation matters
-        off["Side"] = np.full(n, 20.0)
+        off["Side"] = np.full(n, 20.0)   # a real tare load to rotate
 
-        corrected = _reduce(on, off, alpha_offset=3.0)
-
-        # Same thing with the offset baked into the recorded angles
-        on_ref, _ = _point(alpha=15.0, n=n)
-        off_ref = dict(off)
-        off_ref["Alpha"] = np.full(n, 3.0)
-        reference = _reduce(on_ref, off_ref)
-
-        assert np.allclose(np.mean(corrected.wrf_aero.Lift),
-                           np.mean(reference.wrf_aero.Lift))
+        plain = _reduce(on, off)
+        bent = _reduce(on, off, alpha_offset=3.0)
+        assert np.allclose(np.mean(plain.wrf_aero.Lift),
+                           np.mean(bent.wrf_aero.Lift))
 
     def test_raw_channels_stay_as_recorded(self):
         on, off = _point(alpha=4.0, beta=1.0)

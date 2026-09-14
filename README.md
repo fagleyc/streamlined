@@ -627,7 +627,22 @@ beta_model  = beta_recorded  + beta_offset
 ```
 
 The offset is applied to the air-on point AND to its air-off tare, since
-the sting is just as bent with the wind off. Everything downstream then
+the sting is just as bent with the wind off.
+
+**Which rotation the offset enters depends on where the balance sits.**
+An offset describes the model relative to its MOUNT; it does not move the
+balance. So:
+
+| Balance | Its axes are fixed to | Wind-axis rotation uses |
+|---------|-----------------------|-------------------------|
+| Internal (sting) | the model, which bends with it | the CORRECTED incidence |
+| External (ATE) | the turntable / mount | the RECORDED angle |
+
+Putting the offset into an external balance's resolution swings lift into
+the drag axis. On a B52 half-span run a 6 deg offset laid 2.2 lbf of
+spurious drag on top of a real 1.4 lbf, nearly tripling CD and dropping
+max L/D from 15.6 to 5.9 while CL barely moved. For an external balance
+the offset therefore changes only the reported incidence. Everything downstream then
 sees the corrected attitude: the body-to-wind resolution, the MRC moment
 transfer, the steady-state alpha/beta grid, the alpha filter, and the
 exports. Reducing a point recorded at 0 deg with a 12 deg offset is

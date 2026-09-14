@@ -6,7 +6,7 @@ Shared metadata template used across the wind-tunnel software ecosystem
 contact, and a compact version history (newest first).
 """
 
-__version__ = "1.3.4"
+__version__ = "1.3.5"
 APP_NAME = "Streamlined"
 AUTHOR = "C. Fagley"
 CONTACT = "casey.fagley@afacademy.af.edu"
@@ -15,6 +15,10 @@ CONTACT = "casey.fagley@afacademy.af.edu"
 # Dates for 1.2.4+ from the repository history; earlier dates from the
 # archived release zips in Versions/.
 VERSION_HISTORY = [
+    ("1.3.5", "2026-09-14",
+     "Attitude offsets no longer rotate an EXTERNAL balance's loads: the "
+     "balance is mount-fixed, so feeding the offset into its wind-axis "
+     "resolution swung lift into drag and cut L/D by ~2.6x"),
     ("1.3.4", "2026-09-14",
      "Fix re-reducing a loaded case (adding an alpha offset after "
      "loading raised AttributeError), and fix raster figure export "

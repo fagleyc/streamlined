@@ -141,17 +141,29 @@ def reduce_single_point(raw_on: Dict[str, np.ndarray],
     result.air_on = dict(raw_on) if raw_on else {}
     result.air_off = dict(raw_off) if raw_off else {}
 
-    # Store position data from AirON.  The geometry's attitude offsets
-    # are applied HERE, before any transform reads the attitude, so the
-    # wind-axis resolution, the MRC transfer and the steady-state
-    # alpha/beta all see the corrected angle.  The raw 'Alpha'/'Beta'
-    # channels in result.air_on stay exactly as recorded.
+    # Position data from AirON, in two forms.
+    #
+    # alpha_raw / beta_raw are what the positioner RECORDED: where the
+    # mount is actually pointing.  result.alpha / result.beta add the
+    # geometry's attitude offsets and are the model's AERODYNAMIC
+    # incidence, which is what gets reported and what normalizes the
+    # coefficients.
+    #
+    # The distinction matters for load resolution.  An offset describes
+    # the model relative to its mount (a bent sting, or a wing rigged at
+    # incidence); it does not move the balance.  So a rotation out of a
+    # MOUNT-fixed frame needs alpha_raw, and a rotation out of a
+    # MODEL-fixed frame needs result.alpha.  See the two branches below.
+    #
+    # The raw 'Alpha'/'Beta' channels in result.air_on are untouched.
     a_off = float(getattr(geo, 'alpha_offset', 0.0) or 0.0)
     b_off = float(getattr(geo, 'beta_offset', 0.0) or 0.0)
-    result.alpha = np.asarray(raw_on.get('Alpha', np.array([0.0])),
-                              dtype=float) + a_off
-    result.beta = np.asarray(raw_on.get('Beta', np.array([0.0])),
-                             dtype=float) + b_off
+    alpha_raw = np.asarray(raw_on.get('Alpha', np.array([0.0])),
+                           dtype=float)
+    beta_raw = np.asarray(raw_on.get('Beta', np.array([0.0])),
+                          dtype=float)
+    result.alpha = alpha_raw + a_off
+    result.beta = beta_raw + b_off
     result.time = raw_on.get('Time', np.array([0.0]))
 
     # Speed setting from AirON (first-class sweep dimension). The Speed
@@ -179,13 +191,15 @@ def reduce_single_point(raw_on: Dict[str, np.ndarray],
             except (TypeError, ValueError):
                 pass
 
-    # Get position data from AirOFF (may differ from AirON if using a
-    # single tare).  The sting is just as bent with the wind off, so the
-    # same offsets apply to the tare attitude.
-    alpha_off = np.asarray(raw_off.get('Alpha', np.array([0.0])),
-                           dtype=float) + a_off
-    beta_off = np.asarray(raw_off.get('Beta', np.array([0.0])),
-                          dtype=float) + b_off
+    # Position data from AirOFF (may differ from AirON if using a single
+    # tare), in the same two forms.  The sting is just as bent with the
+    # wind off, so the tare attitude carries the same offsets.
+    alpha_off_raw = np.asarray(raw_off.get('Alpha', np.array([0.0])),
+                               dtype=float)
+    beta_off_raw = np.asarray(raw_off.get('Beta', np.array([0.0])),
+                              dtype=float)
+    alpha_off = alpha_off_raw + a_off
+    beta_off = beta_off_raw + b_off
 
     if is_external_balance_data(raw_on):
         # External (ATE) balance: the six channels are already resolved
@@ -205,24 +219,31 @@ def reduce_single_point(raw_on: Dict[str, np.ndarray],
         # internal path, air-on and air-off each resolve with their OWN
         # alpha so a tare taken at a different attitude still subtracts
         # correctly.
+        #
+        # That rotation uses alpha_RAW, not the corrected incidence: the
+        # balance is bolted to the mount, so the angle between its axes
+        # and the flow is the angle the positioner recorded.  An attitude
+        # offset moves the model on the mount, not the mount, and putting
+        # it into this rotation would swing lift into the drag axis.
         span = normalize_span_config(raw_on.get('span_config'))
         result.wrf_on = resolve_external_wrf(
             external_loads_to_ips(raw_on),
-            alpha_deg=result.alpha, span_config=span)
+            alpha_deg=alpha_raw, span_config=span)
         result.wrf_off = resolve_external_wrf(
             external_loads_to_ips(raw_off),
-            alpha_deg=alpha_off, span_config=span,
+            alpha_deg=alpha_off_raw, span_config=span,
             n_samples=len(result.wrf_on.Lift))
 
         # MRC shift. The MATLAB never re-referenced external loads
         # (equivalent to mshift == 0, which this is a no-op for), but
         # Freestream now offers an MRC and its live report applies one,
         # so the offline reduction has to agree with it.
+        # Mount-fixed frame again, so alpha_raw again.
         result.wrf_on = transfer_external_loads_to_mrc(
-            result.wrf_on, result.alpha, result.beta, geo.mshift,
+            result.wrf_on, alpha_raw, beta_raw, geo.mshift,
             span_config=span)
         result.wrf_off = transfer_external_loads_to_mrc(
-            result.wrf_off, alpha_off, beta_off, geo.mshift,
+            result.wrf_off, alpha_off_raw, beta_off_raw, geo.mshift,
             span_config=span)
     else:
         # Calculate BRF forces for air-on and air-off
@@ -230,7 +251,13 @@ def reduce_single_point(raw_on: Dict[str, np.ndarray],
         result.brf_off = calc_brf_forces(raw_off, cal, geo, balance_config)
 
         # Calculate WRF forces - CRITICAL: each uses its OWN alpha/beta!
-        # This is essential for proper tare subtraction when tare is at different angle
+        # This is essential for proper tare subtraction when tare is at
+        # different angle.
+        #
+        # The corrected incidence is right here: an internal balance sits
+        # inside the model and bends with it, so its body axes ARE the
+        # model's and the body-to-wind rotation is by the angle the model
+        # actually flies at.
         result.wrf_on = calc_wrf_forces(result.brf_on, result.alpha, result.beta)
         result.wrf_off = calc_wrf_forces(result.brf_off, alpha_off, beta_off)
 
