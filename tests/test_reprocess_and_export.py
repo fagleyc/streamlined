@@ -311,3 +311,218 @@ class TestExportedImageFillsItsFrame:
         covered = (max(ys) - min(ys)) / image.height()
         assert covered > 0.8, (
             "figure fills only %.0f%% of the image height" % (covered * 100))
+
+
+class TestLegendPlacement:
+    """The legend goes where it is told, not wherever it lands."""
+
+    @staticmethod
+    def _diff_centroid(path_a, path_b):
+        """Which quadrant the pixels that CHANGED between two exports
+        fall in.  Differencing against a legend-free render locates the
+        legend box directly, without guessing where the data ink is."""
+        from PyQt6.QtGui import QImage
+        a, b = QImage(str(path_a)), QImage(str(path_b))
+        assert a.size() == b.size(), (a.size(), b.size())
+        w, h = a.width(), a.height()
+        xs, ys = [], []
+        for y in range(0, h, 2):
+            for x in range(0, w, 2):
+                if a.pixelColor(x, y) != b.pixelColor(x, y):
+                    xs.append(x)
+                    ys.append(y)
+        assert xs, "the two exports are identical - no legend was drawn"
+        cx, cy = sum(xs) / len(xs), sum(ys) / len(ys)
+        return ('U' if cy < h / 2 else 'L') + ('L' if cx < w / 2 else 'R')
+
+    @staticmethod
+    def _dialog(panel):
+        from utils.gui.widgets.save_image_dialog import SaveImageDialog
+        canvas = panel.plot_canvas
+        return SaveImageDialog(
+            plot_items=list(canvas._plot_items),
+            plot_data=list(canvas._plot_data),
+            plot_item=canvas.plot_item, plot_widget=canvas.plot_widget,
+            show_grid=True, show_legend=True, parent=panel)
+
+    def test_each_corner_gets_its_own_legend(self, qapp, tmp_path):
+        from PyQt6.QtCore import QSettings
+        from utils.gui.widgets.save_image_dialog import LEGEND_POSITIONS
+        QSettings("WindTunnelLab", "DataAnalyzer").clear()
+        panel = _panel_with_a_plot(qapp)
+        if not hasattr(panel.plot_canvas, 'plot_item'):
+            pytest.skip("pyqtgraph canvas not in use")
+
+        # Render once with no legend; everything that differs from it in
+        # the next renders IS the legend box.
+        off = self._dialog(panel)
+        off.chk_legend.setChecked(False)
+        base_path = tmp_path / "no_legend.png"
+        off._export_to_file(str(base_path))
+
+        wanted = {"Upper Left": 'UL', "Upper Right": 'UR',
+                  "Lower Left": 'LL', "Lower Right": 'LR'}
+        for position, quadrant in wanted.items():
+            assert position in LEGEND_POSITIONS
+            dialog = self._dialog(panel)
+            dialog.chk_legend.setChecked(True)
+            dialog.cmb_legend_pos.setCurrentText(position)
+            path = tmp_path / ("legend_%s.png" % quadrant)
+            dialog._export_to_file(str(path))
+            landed = self._diff_centroid(base_path, path)
+            assert landed == quadrant, (
+                "legend asked for %s landed in %s" % (position, landed))
+
+    def test_a_position_is_offered_for_every_corner(self, qapp):
+        from utils.gui.widgets.save_image_dialog import LEGEND_POSITIONS
+        panel = _panel_with_a_plot(qapp)
+        if not hasattr(panel.plot_canvas, 'plot_item'):
+            pytest.skip("pyqtgraph canvas not in use")
+        dialog = self._dialog(panel)
+        offered = {dialog.cmb_legend_pos.itemText(i)
+                   for i in range(dialog.cmb_legend_pos.count())}
+        assert offered == set(LEGEND_POSITIONS)
+
+
+class TestExportStyleIsRemembered:
+    """Set the house style once, not on every export."""
+
+    @staticmethod
+    def _dialog(panel):
+        from utils.gui.widgets.save_image_dialog import SaveImageDialog
+        canvas = panel.plot_canvas
+        return SaveImageDialog(
+            plot_items=list(canvas._plot_items),
+            plot_data=list(canvas._plot_data),
+            plot_item=canvas.plot_item, plot_widget=canvas.plot_widget,
+            show_grid=True, show_legend=True, parent=panel)
+
+    def test_widths_markers_and_legend_survive_a_reopen(self, qapp):
+        from PyQt6.QtCore import QSettings
+        QSettings("WindTunnelLab", "DataAnalyzer").clear()
+        panel = _panel_with_a_plot(qapp)
+        if not hasattr(panel.plot_canvas, 'plot_item'):
+            pytest.skip("pyqtgraph canvas not in use")
+
+        first = self._dialog(panel)
+        first.spn_bulk_lw.setValue(3.5)
+        first._apply_bulk_linewidth()
+        first.spn_bulk_ms.setValue(11.0)
+        first._apply_bulk_markersize()
+        first.cmb_legend_pos.setCurrentText("Lower Right")
+        first.spn_legend_font.setValue(15)
+        first.chk_grid.setChecked(False)
+        first._save_settings()
+
+        second = self._dialog(panel)
+        assert second.trace_editors[0].spn_linewidth.value() == \
+            pytest.approx(3.5)
+        assert second.trace_editors[0].spn_markersize.value() == \
+            pytest.approx(11.0)
+        assert second.cmb_legend_pos.currentText() == "Lower Right"
+        assert second.spn_legend_font.value() == 15
+        assert second.chk_grid.isChecked() is False
+
+    def test_the_remembered_style_reaches_every_trace(self, qapp):
+        from PyQt6.QtCore import QSettings
+        QSettings("WindTunnelLab", "DataAnalyzer").clear()
+        panel = _panel_with_a_plot(qapp)
+        if not hasattr(panel.plot_canvas, 'plot_item'):
+            pytest.skip("pyqtgraph canvas not in use")
+
+        first = self._dialog(panel)
+        first.spn_bulk_lw.setValue(2.5)
+        first._apply_bulk_linewidth()
+        first._save_settings()
+
+        second = self._dialog(panel)
+        widths = [e.spn_linewidth.value() for e in second.trace_editors]
+        assert widths and all(w == pytest.approx(2.5) for w in widths), \
+            widths
+
+    def test_defaults_are_used_when_nothing_was_saved(self, qapp):
+        from PyQt6.QtCore import QSettings
+        from utils.gui.widgets.save_image_dialog import (
+            DEFAULT_LEGEND_POSITION)
+        QSettings("WindTunnelLab", "DataAnalyzer").clear()
+        panel = _panel_with_a_plot(qapp)
+        if not hasattr(panel.plot_canvas, 'plot_item'):
+            pytest.skip("pyqtgraph canvas not in use")
+        dialog = self._dialog(panel)
+        assert dialog.cmb_legend_pos.currentText() == \
+            DEFAULT_LEGEND_POSITION
+        assert dialog.trace_editors[0].spn_linewidth.value() == \
+            pytest.approx(1.5)
+
+
+class TestExportedStyleReachesTheFile:
+    """What the dialog is set to is what lands in the file."""
+
+    @staticmethod
+    def _dialog(panel):
+        from utils.gui.widgets.save_image_dialog import SaveImageDialog
+        canvas = panel.plot_canvas
+        return SaveImageDialog(
+            plot_items=list(canvas._plot_items),
+            plot_data=list(canvas._plot_data),
+            plot_item=canvas.plot_item, plot_widget=canvas.plot_widget,
+            show_grid=True, show_legend=True, parent=panel)
+
+    def test_line_width_changes_the_png(self, qapp, tmp_path):
+        from PyQt6.QtGui import QImage
+        panel = _panel_with_a_plot(qapp)
+        if not hasattr(panel.plot_canvas, 'plot_item'):
+            pytest.skip("pyqtgraph canvas not in use")
+
+        def ink(path):
+            image = QImage(str(path))
+            background = image.pixelColor(0, 0)
+            return sum(1 for y in range(0, image.height(), 2)
+                       for x in range(0, image.width(), 2)
+                       if image.pixelColor(x, y) != background)
+
+        counts = []
+        for tag, lw, ms in (("thin", 0.5, 2.0), ("thick", 8.0, 22.0)):
+            dialog = self._dialog(panel)
+            for editor in dialog.trace_editors:
+                editor.spn_linewidth.setValue(lw)
+                editor.spn_markersize.setValue(ms)
+            path = tmp_path / ("w_%s.png" % tag)
+            dialog._export_to_file(str(path))
+            counts.append(ink(path))
+        assert counts[1] > counts[0] * 1.05, (
+            "a thick trace has to put down more ink than a thin one: %s"
+            % counts)
+
+    def test_line_width_reaches_the_svg(self, qapp, tmp_path):
+        import re
+        panel = _panel_with_a_plot(qapp)
+        if not hasattr(panel.plot_canvas, 'plot_item'):
+            pytest.skip("pyqtgraph canvas not in use")
+        dialog = self._dialog(panel)
+        for editor in dialog.trace_editors:
+            editor.spn_linewidth.setValue(7.0)
+        path = tmp_path / "fig.svg"
+        dialog._export_to_file(str(path))
+        svg = path.read_text(encoding="utf-8", errors="replace")
+        widths = {float(w) for w in
+                  re.findall(r'stroke-width="([\d.]+)"', svg)}
+        assert 7.0 in widths, sorted(widths)
+
+    def test_the_svg_carries_a_viewbox_and_the_legend(self, qapp,
+                                                      tmp_path):
+        import re
+        panel = _panel_with_a_plot(qapp)
+        if not hasattr(panel.plot_canvas, 'plot_item'):
+            pytest.skip("pyqtgraph canvas not in use")
+        dialog = self._dialog(panel)
+        dialog.chk_legend.setChecked(True)
+        path = tmp_path / "fig.svg"
+        dialog._export_to_file(str(path))
+        svg = path.read_text(encoding="utf-8", errors="replace")
+        # An SVG with no viewBox has no intrinsic size and lands
+        # wherever the consumer guesses.
+        assert re.search(
+            r'viewBox\s*=\s*"[-\d.]+ [-\d.]+ [\d.]+ [\d.]+"', svg), \
+            svg[:300]
+        assert "B52_Halfspan_Baseline" in svg

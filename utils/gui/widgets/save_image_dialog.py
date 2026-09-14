@@ -91,6 +91,17 @@ _SYMBOL_TO_NAME = {v: k for k, v in MARKER_TYPES.items()}
 # Settings key prefix
 _SETTINGS_PREFIX = "save_image/"
 
+# Legend placements, as (itemPos, parentPos, offset) for
+# pyqtgraph LegendItem.anchor().  The offset keeps the box off the axis
+# lines; its sign follows the corner so the inset is always inward.
+LEGEND_POSITIONS = {
+    "Upper Left": ((0, 0), (0, 0), (12, 12)),
+    "Upper Right": ((1, 0), (1, 0), (-12, 12)),
+    "Lower Left": ((0, 1), (0, 1), (12, -12)),
+    "Lower Right": ((1, 1), (1, 1), (-12, -12)),
+}
+DEFAULT_LEGEND_POSITION = "Upper Left"
+
 
 class TraceEditor(QWidget):
     """Editor row for a single plot trace."""
@@ -267,6 +278,15 @@ class SaveImageDialog(QDialog):
         self.chk_legend.setChecked(self._show_legend)
         self.chk_legend.stateChanged.connect(self._update_preview)
         font_row.addWidget(self.chk_legend)
+
+        self.cmb_legend_pos = QComboBox()
+        self.cmb_legend_pos.addItems(list(LEGEND_POSITIONS))
+        self.cmb_legend_pos.setCurrentText(DEFAULT_LEGEND_POSITION)
+        self.cmb_legend_pos.setToolTip(
+            "Which corner of the plot the legend sits in")
+        self.cmb_legend_pos.currentIndexChanged.connect(
+            self._update_preview)
+        font_row.addWidget(self.cmb_legend_pos)
 
         font_row.addStretch()
         layout.addLayout(font_row)
@@ -489,6 +509,30 @@ class SaveImageDialog(QDialog):
         legend_font = s.value(p + "legend_font", 12, type=int)
         self.spn_legend_font.setValue(legend_font)
 
+        pos = s.value(p + "legend_pos", DEFAULT_LEGEND_POSITION)
+        if pos in LEGEND_POSITIONS:
+            self.cmb_legend_pos.setCurrentText(pos)
+
+        self.chk_grid.setChecked(s.value(p + "grid", True, type=bool))
+        self.chk_legend.setChecked(s.value(p + "legend", True, type=bool))
+
+        # Trace style is remembered as the house default and applied to
+        # EVERY trace, rather than per-trace by index: which traces are
+        # loaded changes between sessions, but "my lines are 2.5 wide
+        # with 8 pt circles" does not.
+        lw = s.value(p + "line_width", 1.5, type=float)
+        ms = s.value(p + "marker_size", 6.0, type=float)
+        marker = s.value(p + "marker", "", type=str)
+        self.spn_bulk_lw.setValue(lw)
+        self.spn_bulk_ms.setValue(ms)
+        for editor in self.trace_editors:
+            editor.spn_linewidth.setValue(lw)
+            editor.spn_markersize.setValue(ms)
+            if marker:
+                idx = editor.cmb_marker.findText(marker)
+                if idx >= 0:
+                    editor.cmb_marker.setCurrentIndex(idx)
+
     def _save_settings(self):
         """Persist current dialog settings to QSettings."""
         s = self._settings
@@ -500,6 +544,17 @@ class SaveImageDialog(QDialog):
         s.setValue(p + "label_font", self.spn_label_font.value())
         s.setValue(p + "tick_font", self.spn_tick_font.value())
         s.setValue(p + "legend_font", self.spn_legend_font.value())
+        s.setValue(p + "legend_pos", self.cmb_legend_pos.currentText())
+        s.setValue(p + "grid", self.chk_grid.isChecked())
+        s.setValue(p + "legend", self.chk_legend.isChecked())
+
+        # The first trace carries the house style (they are normally set
+        # together, through the bulk controls).
+        if self.trace_editors:
+            first = self.trace_editors[0]
+            s.setValue(p + "line_width", first.spn_linewidth.value())
+            s.setValue(p + "marker_size", first.spn_markersize.value())
+            s.setValue(p + "marker", first.cmb_marker.currentText())
 
     # --- Bulk actions ---
 
@@ -695,6 +750,25 @@ class SaveImageDialog(QDialog):
         self._export_to_file(filepath)
         self.accept()
 
+    def _anchor_legend(self, legend) -> None:
+        """Pin the legend to the chosen corner of the plot.
+
+        pyqtgraph anchors a new legend to the top-left of the view with a
+        small offset and otherwise leaves it where it lands, which on a
+        rising curve is straight through the data.  Anchoring is done
+        AFTER the labels are set so the box has its final size and the
+        right-hand corners line up against the correct edge.
+        """
+        anchor = LEGEND_POSITIONS.get(self.cmb_legend_pos.currentText())
+        if anchor is None or legend is None:
+            return
+        item_pos, parent_pos, offset = anchor
+        try:
+            legend.anchor(itemPos=item_pos, parentPos=parent_pos,
+                          offset=offset)
+        except Exception:                                  # noqa: BLE001
+            pass
+
     @staticmethod
     def _visible_items_rect(scene) -> QRectF:
         """The scene rect covering only what is actually drawn.
@@ -841,6 +915,7 @@ class SaveImageDialog(QDialog):
             for sample, lbl in legend.items:
                 lbl.setAttr('size', font_size)
                 lbl.setText(lbl.text)
+            self._anchor_legend(legend)
 
         # Apply axis limits
         xmin, xmax, ymin, ymax = self._get_axis_limits()
