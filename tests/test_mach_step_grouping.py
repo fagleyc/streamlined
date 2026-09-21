@@ -245,3 +245,160 @@ class TestSpeedUnitReachesTheCase:
         channels = {'speed_value': 30.0, 'speed_unit': 'hz'}
         ProcessingWorker._inject_nominal_setpoints(channels, _Info())
         assert channels['speed_unit'] == 'hz'
+
+
+# ── filtering when the loaded datasets hold different speed counts ──────
+def _flat_two_speed():
+    """M0.2 and M0.3 over 9 alphas: 18 points, so the reduction leaves
+    it FLAT (n_alpha * n_beta != n_points)."""
+    alphas = np.arange(-4.0, 5.0, 1.0)
+    case = Case(id="two", name="Sweep_0p2_0p3")
+    a, m, s = [], [], []
+    for commanded, measured in ((0.2, 0.205), (0.3, 0.297)):
+        for i, al in enumerate(alphas):
+            a.append(al)
+            m.append(measured + 0.0004 * i)
+            s.append(commanded)
+    case.alphas = np.array(a)
+    case.betas = np.zeros(len(a))
+    case.Cl = np.linspace(0.0, 1.0, len(a))
+    case.Cd = np.full(len(a), 0.03)
+    case.machs = np.array(m)
+    case.speeds = np.array(s)
+    case.speed_unit = 'mach'
+    case.alpha_nominal = np.array(a)
+    case.beta_nominal = np.zeros(len(a))
+    case.mach_number = float(np.mean(m))
+    return case
+
+
+def _gridded_one_speed():
+    """M0.3 only over 9 alphas x 1 beta: 9 points, so the reduction
+    reshapes it to a 2-D GRID, which takes the other plotting path.
+
+    Its measured mean is 0.2986 - more than the 5e-4 filter tolerance
+    away from the 0.3 it was commanded to.
+    """
+    alphas = np.arange(-4.0, 5.0, 1.0)
+    n = len(alphas)
+    case = Case(id="one", name="Sweep_0p3_only")
+    case.alphas = alphas.reshape(n, 1)
+    case.betas = np.zeros((n, 1))
+    case.Cl = np.linspace(0.0, 1.0, n).reshape(n, 1)
+    case.Cd = np.full((n, 1), 0.03)
+    measured = 0.297 + 0.0004 * np.arange(n)
+    case.machs = measured
+    case.speeds = np.full(n, 0.3).reshape(n, 1)
+    case.speed_unit = 'mach'
+    case.alpha_nominal = alphas.reshape(n, 1)
+    case.beta_nominal = np.zeros((n, 1))
+    case.mach_number = float(np.mean(measured))
+    return case
+
+
+@pytest.fixture(scope="module")
+def qapp():
+    from PyQt6.QtWidgets import QApplication
+    return QApplication.instance() or QApplication([sys.argv[0]])
+
+
+class _FilterHarness:
+    def __init__(self, cases):
+        from utils.gui.models.data_model import DataModel
+        from utils.gui.views.plot_panel import PlotPanel
+        self.model = DataModel()
+        for case in cases:
+            self.model.cases.add(case)
+        self.panel = PlotPanel(self.model)
+        self.drawn = []
+        self.panel.plot_canvas.plot = self._capture
+        self.panel.filter_toolbar.set_mach_values(
+            self.model.cases.all_mach_numbers)
+
+    def _capture(self, x, y, **kw):
+        self.drawn.append(kw.get('label') or '')
+
+    def select(self, mach):
+        combo = self.panel.filter_toolbar.cmb_mach
+        data = [combo.itemData(i) for i in range(combo.count())]
+        combo.setCurrentIndex(data.index(mach))
+        # Changing the combo already redrew; measure a single render.
+        self.drawn.clear()
+        self.panel._update_plot()
+        return {label.split()[0] for label in self.drawn if label}
+
+
+class TestMixedSpeedCountFiltering:
+    """A one-speed case must not vanish when its Mach is selected.
+
+    A case swept at a single speed reshapes to a 2-D grid, which takes
+    the whole-case plotting path.  That path used to decide membership
+    from case.mach_number - the MEASURED mean - against a filter that
+    offers the COMMANDED setpoint, so a run commanded at M0.3 that held
+    0.2986 was discarded by its own filter entry.  A multi-speed case is
+    flat rather than gridded and filtered correctly, so the fault only
+    surfaced when the loaded datasets held different speed counts.
+    """
+
+    def test_selecting_a_shared_mach_keeps_both_datasets(self, qapp):
+        h = _FilterHarness([_flat_two_speed(), _gridded_one_speed()])
+        assert h.select(0.3) == {"Sweep_0p2_0p3", "Sweep_0p3_only"}
+
+    def test_selecting_the_unshared_mach_keeps_only_its_dataset(self,
+                                                                qapp):
+        h = _FilterHarness([_flat_two_speed(), _gridded_one_speed()])
+        assert h.select(0.2) == {"Sweep_0p2_0p3"}
+
+    def test_all_keeps_everything(self, qapp):
+        h = _FilterHarness([_flat_two_speed(), _gridded_one_speed()])
+        assert h.select(None) == {"Sweep_0p2_0p3", "Sweep_0p3_only"}
+
+    def test_the_filter_offers_the_union_of_the_steps(self, qapp):
+        h = _FilterHarness([_flat_two_speed(), _gridded_one_speed()])
+        assert h.model.cases.all_mach_numbers == [0.2, 0.3]
+
+
+class TestCaseHoldsMach:
+    """The whole-case membership test, directly."""
+
+    def test_a_gridded_case_is_held_by_its_commanded_mach(self):
+        from utils.gui.views.plot_panel import PlotPanel
+        case = _gridded_one_speed()
+        assert PlotPanel._case_holds_mach(case, 0.3) is True
+
+    def test_the_measured_mean_alone_would_have_dropped_it(self):
+        # The guard on the fix: the old key misses by more than the
+        # filter tolerance.
+        case = _gridded_one_speed()
+        assert not np.isclose(case.mach_number, 0.3, atol=5e-4)
+
+    def test_a_case_at_another_step_is_dropped(self):
+        from utils.gui.views.plot_panel import PlotPanel
+        case = _gridded_one_speed()
+        assert PlotPanel._case_holds_mach(case, 0.2) is False
+
+    def test_a_multi_step_case_is_held_by_any_of_its_steps(self):
+        from utils.gui.views.plot_panel import PlotPanel
+        case = _flat_two_speed()
+        assert PlotPanel._case_holds_mach(case, 0.2) is True
+        assert PlotPanel._case_holds_mach(case, 0.3) is True
+        assert PlotPanel._case_holds_mach(case, 0.25) is False
+
+    def test_a_case_with_no_mach_record_is_kept(self):
+        # Nothing to key it either way; hiding data on a guess is worse
+        # than showing it.
+        from utils.gui.views.plot_panel import PlotPanel
+        case = _gridded_one_speed()
+        case.machs = np.array([])
+        case.speeds = np.array([])
+        case.mach_number = None
+        assert PlotPanel._case_holds_mach(case, 0.3) is True
+
+    def test_it_falls_back_to_the_case_mean_without_per_point_machs(self):
+        from utils.gui.views.plot_panel import PlotPanel
+        case = _gridded_one_speed()
+        case.machs = np.array([])
+        case.speeds = np.array([])
+        case.mach_number = 0.3
+        assert PlotPanel._case_holds_mach(case, 0.3) is True
+        assert PlotPanel._case_holds_mach(case, 0.2) is False

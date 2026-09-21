@@ -462,6 +462,33 @@ class PlotPanel(QWidget):
             return None
         return np.isclose(machs, sel_mach, atol=5e-4)
 
+    @staticmethod
+    def _case_holds_mach(case: TestCase, sel_mach: float) -> bool:
+        """Does this case hold any point at the selected speed step?
+
+        A case swept at one speed reshapes to a 2-D (alpha x beta) grid,
+        and the 2-D path cannot mask individual points, so it keeps or
+        drops the case whole.  That decision keys on point_machs - the
+        SAME value the Mach filter offers - because a run commanded at
+        M0.3 that held 0.2986 would otherwise miss its own filter entry
+        by more than the tolerance and vanish from the plot.
+
+        A case with no per-point record at all is KEPT: it cannot be
+        keyed either way, and hiding data on a guess is worse than
+        showing it.
+        """
+        keys = np.asarray(getattr(case, 'point_machs', np.array([])),
+                          dtype=float).ravel()
+        if keys.size:
+            return bool(np.any(np.isclose(keys, sel_mach, atol=5e-4)))
+
+        case_mach = (case.mach_number if case.mach_number is not None
+                     else (float(np.mean(case.machs))
+                           if len(case.machs) > 0 else None))
+        if case_mach is None:
+            return True
+        return bool(np.isclose(case_mach, sel_mach, atol=5e-4))
+
     def _plot_case(self, case: TestCase, x_var: str, y_var: str,
                    sel_alphas: Optional[List[float]],
                    sel_betas: Optional[List[float]],
@@ -490,13 +517,9 @@ class PlotPanel(QWidget):
         # 1-D multi-speed path; and a whole-case skip for a single-Mach 2-D
         # grid whose Mach doesn't match the selection.
         mach_mask_flat = self._mach_point_mask(case, sel_mach)
-        if sel_mach is not None and case.alphas.ndim == 2:
-            case_mach = (case.mach_number if case.mach_number is not None
-                         else (float(np.mean(case.machs))
-                               if len(case.machs) > 0 else None))
-            if case_mach is not None and not np.isclose(
-                    case_mach, sel_mach, atol=5e-4):
-                return
+        if (sel_mach is not None and case.alphas.ndim == 2
+                and not self._case_holds_mach(case, sel_mach)):
+            return
 
         if case.alphas.ndim == 2:
             # --- 2D grid data (rows = alpha, cols = beta) ---
