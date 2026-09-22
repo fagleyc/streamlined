@@ -214,6 +214,10 @@ class FastPlotCanvas(QWidget):
         self._plot_items: List[pg.PlotDataItem] = []
         self._plot_data: List[Dict[str, Any]] = []
         self._legend = None
+        #: Where the user last dragged the legend, in ViewBox coordinates.
+        #: A redraw destroys and rebuilds the legend, so without this it
+        #: springs back to the default corner every time data is added.
+        self._legend_pos = None
         self._show_grid = True
         self._show_legend = True
         self._crosshair = None
@@ -582,7 +586,9 @@ class FastPlotCanvas(QWidget):
 
     def clear(self):
         """Clear the plot."""
-        # Remove legend BEFORE clearing items to avoid stale references
+        # Remove legend BEFORE clearing items to avoid stale references,
+        # remembering where it was so the rebuilt one lands there again.
+        self._remember_legend_pos()
         if self._legend is not None:
             try:
                 self._legend.scene().removeItem(self._legend)
@@ -752,7 +758,7 @@ class FastPlotCanvas(QWidget):
             self.plot_item.setYRange(ylim[0], ylim[1], padding=0)
 
     def add_legend(self, loc: str = 'best'):
-        """Add legend to the plot."""
+        """Add legend to the plot, where the user last put it."""
         if self._plot_data and self._legend is None:
             self._legend = self.plot_item.addLegend(
                 offset=(10, 10),
@@ -765,9 +771,40 @@ class FastPlotCanvas(QWidget):
             for item in self.plot_item.items:
                 if isinstance(item, pg.PlotDataItem) and item.name():
                     self._legend.addItem(item, item.name())
+            self._restore_legend_pos()
+
+    def _remember_legend_pos(self):
+        """Note where the legend sits before it is destroyed.
+
+        The legend is draggable, and every redraw - which is what adding
+        data triggers - destroys and rebuilds it. Without remembering,
+        the rebuilt legend appears back in the default corner, which
+        reads as a NEW legend rather than the one that was moved.
+        """
+        if self._legend is None:
+            return
+        try:
+            self._legend_pos = pg.Point(self._legend.pos())
+        except Exception:                                  # noqa: BLE001
+            pass
+
+    def _restore_legend_pos(self):
+        """Put a freshly built legend back where the user left it.
+
+        autoAnchor is the same public call a drag makes, so the legend
+        re-anchors relative to the ViewBox and keeps its place when the
+        plot is resized.
+        """
+        if self._legend is None or self._legend_pos is None:
+            return
+        try:
+            self._legend.autoAnchor(self._legend_pos)
+        except Exception:                                  # noqa: BLE001
+            pass
 
     def remove_legend(self):
         """Remove the legend from the plot."""
+        self._remember_legend_pos()
         if self._legend is not None:
             try:
                 self._legend.scene().removeItem(self._legend)

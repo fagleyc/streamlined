@@ -929,6 +929,14 @@ Both implement the same API: `plot()`, `clear()`, `refresh()`, `set_labels()`, `
 | C_n (yaw) vs Alpha | alpha | C_n |
 | Lateral vs Beta | beta | C_Y |
 
+**Case list:** `Show All` / `Hide All` toggle visibility; `Clear All`
+removes every loaded case after confirming. Clearing only drops the
+in-memory reduction (including geometry and calibration assignments) -
+nothing on disk is touched, so the run directories can be loaded again.
+
+**Legend:** the plot legend is draggable, and where you put it is kept
+across redraws, so adding more data does not move it back to the corner.
+
 **X Axis selector:**
 
 The `X Axis` dropdown overrides the x variable the plot type implies, so

@@ -253,6 +253,8 @@ class DataPanel(QWidget):
         self.case_list.case_visibility_changed.connect(self._on_case_visibility_changed)
         self.case_list.case_color_changed.connect(self._on_case_color_changed)
         self.case_list.add_requested.connect(self._on_add_case_requested)
+        self.case_list.clear_all_requested.connect(
+            self._on_clear_all_requested)
 
     def set_balance_type(self, balance_type: str):
         """Route a detected run balance type to the calibration panel."""
@@ -262,6 +264,25 @@ class DataPanel(QWidget):
     def _on_case_delete(self, case_id: str):
         """Handle case delete request."""
         self.case_delete_requested.emit(case_id)
+
+    def _on_clear_all_requested(self):
+        """Drop every loaded case, after confirming.
+
+        This throws away the whole reduction - geometry and calibration
+        assignments included - so it asks first. Nothing on disk is
+        touched; the run directories can simply be loaded again.
+        """
+        n = len(list(self.model.cases))
+        if n == 0:
+            return
+        reply = QMessageBox.question(
+            self, "Clear All Cases",
+            f"Remove all {n} loaded case(s)?\n\n"
+            "The data files on disk are not affected.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if reply == QMessageBox.StandardButton.Yes:
+            self.model.clear_all()
 
     def _on_case_visibility_changed(self, case_id: str, visible: bool):
         """Handle case visibility change."""

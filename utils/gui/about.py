@@ -6,7 +6,7 @@ Shared metadata template used across the wind-tunnel software ecosystem
 contact, and a compact version history (newest first).
 """
 
-__version__ = "1.3.7"
+__version__ = "1.3.8"
 APP_NAME = "Streamlined"
 AUTHOR = "C. Fagley"
 CONTACT = "casey.fagley@afacademy.af.edu"
@@ -15,6 +15,9 @@ CONTACT = "casey.fagley@afacademy.af.edu"
 # Dates for 1.2.4+ from the repository history; earlier dates from the
 # archived release zips in Versions/.
 VERSION_HISTORY = [
+    ("1.3.8", "2026-09-22",
+     "A legend you have moved stays put when data is added, instead of "
+     "springing back to the corner; Clear All button on the case list"),
     ("1.3.7", "2026-09-21",
      "Mach filter no longer discards a single-speed dataset: the "
      "whole-case test keyed on the measured mean while the filter "
