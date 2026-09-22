@@ -28,16 +28,17 @@ Streamlined is a Python-based wind tunnel data reduction system that replaces le
 4. [Stage 3: Apply Calibration to Raw Voltages](#stage-3-apply-calibration-to-raw-voltages)
 5. [Stage 4: Body Reference Frame (BRF) Forces](#stage-4-body-reference-frame-brf-forces)
 6. [Stage 5: Wind Reference Frame (WRF) Transformation](#stage-5-wind-reference-frame-wrf-transformation)
-7. [Stage 6: Tare Subtraction (Air-Off Removal)](#stage-6-tare-subtraction-air-off-removal)
-8. [Stage 7: Tunnel Conditions](#stage-7-tunnel-conditions)
-9. [Stage 8: Aerodynamic Coefficients](#stage-8-aerodynamic-coefficients)
-10. [Stage 9: Steady-State Reduction](#stage-9-steady-state-reduction)
-11. [Pressure Transducer Calibration](#pressure-transducer-calibration)
-12. [Model Geometry](#model-geometry)
-13. [Derived Aerodynamic Parameters](#derived-aerodynamic-parameters)
-14. [Graphical User Interface](#graphical-user-interface)
-15. [Export Capabilities](#export-capabilities)
-16. [Technical Specifications](#technical-specifications)
+7. [External Balance (ATE) Reduction](#external-balance-ate-reduction)
+8. [Stage 6: Tare Subtraction (Air-Off Removal)](#stage-6-tare-subtraction-air-off-removal)
+9. [Stage 7: Tunnel Conditions](#stage-7-tunnel-conditions)
+10. [Stage 8: Aerodynamic Coefficients](#stage-8-aerodynamic-coefficients)
+11. [Stage 9: Steady-State Reduction](#stage-9-steady-state-reduction)
+12. [Pressure Transducer Calibration](#pressure-transducer-calibration)
+13. [Model Geometry](#model-geometry)
+14. [Derived Aerodynamic Parameters](#derived-aerodynamic-parameters)
+15. [Graphical User Interface](#graphical-user-interface)
+16. [Export Capabilities](#export-capabilities)
+17. [Technical Specifications](#technical-specifications)
 
 ---
 
@@ -90,6 +91,8 @@ TDMS Files (raw voltages)
 [Stage 9] Steady-state: mean(CL(t)) --> single CL value  |
           std(CL(t)) --> CL_std (flow unsteadiness)       |
 ```
+
+**Two balance paths.** The diagram above is the **internal (sting) balance**, which streams bridge volts and needs Stages 2-5 to turn them into wind-axis loads. An **external (ATE) balance** streams loads that are already resolved, so it skips Stages 2, 3 and 4 entirely and replaces Stage 5 with a mount-dependent resolution. Both paths rejoin at Stage 6 and everything downstream is identical. See [External Balance (ATE) Reduction](#external-balance-ate-reduction).
 
 **Critical design point:** Tare subtraction happens in the **Wind Reference Frame**, not the Body Reference Frame. Air-on and air-off data are each transformed through BRF and WRF using **their own** alpha/beta angles before subtraction. This ensures correct weight tare removal when the model is at any attitude.
 
@@ -341,6 +344,105 @@ Yaw   = Mz
 **Important:** This transformation is applied **separately** to air-on and air-off data using **their own** alpha/beta angles. Air-off data may be at a different angle than air-on (e.g., single-tare approach at alpha=0).
 
 **Output:** `WRFForces` containing `Lift, Drag, Side, Roll, Pitch, Yaw` — all time-series vectors.
+
+---
+
+## External Balance (ATE) Reduction
+
+**Source:** `external_balance.py`, dispatched from `reduction.py` -> `reduce_single_point()`
+
+An external balance sits under the tunnel and streams six **already-resolved** load channels. There are no bridge volts to calibrate, so Stages 2-4 do not apply and no `.vol` file is required. This path replaces Stage 5 only; Stages 6-9 are shared with the internal balance.
+
+### Detection
+
+**Source:** `transforms.py` -> `is_external_balance_data()`
+
+An explicit `balance_type` marker decides it: Freestream stamps `'external'` or `'internal'` into every run file, and the directory manifest repeats it. With no marker, structural detection applies — resolved load channels present (`Fz, Fx, My`, or the legacy `Lift, Drag, Pitch`) and **no** bridge channels — so a legacy file still classifies correctly.
+
+### Channel Order
+
+The balance frame is **X back, Y right, Z up**:
+
+| Column | Balance channel | Legacy name |
+|--------|-----------------|-------------|
+| 1 | Fx | Drag |
+| 2 | Fy | Side |
+| 3 | Fz | Lift |
+| 4 | Mx | Roll |
+| 5 | My | Pitch |
+| 6 | Mz | Yaw |
+
+Both naming eras are read; the legacy wind words are accepted as aliases for the balance-frame names.
+
+### Step 1: Unit Conversion
+
+**Source:** `external_loads_to_ips()`
+
+The chain works in **lb** and **in-lb**. The OGI's unit setting is operator-selectable and is not carried on the wire, so the conversion is driven entirely by the recorded `load_units` marker:
+
+| Marker | Force scale | Moment scale |
+|--------|-------------|--------------|
+| `lb` | 1.0 | 1.0 |
+| `lbft` | 1.0 | **12.0** |
+| `n` | 0.224809 | 8.850746 |
+| `kg` | 2.204623 | 86.796166 |
+
+An absent or unrecognised marker passes through untouched. Note that the OGI's pound setting pairs lbf with lbf·**ft**, not in·lbf — a factor of 12 on every moment coefficient.
+
+### Step 2: Mount-Dependent Resolution
+
+**Source:** `resolve_external_wrf()`
+
+How the channels become wind-axis loads depends on how the model is mounted. The marker is `span_config` (`'full'` / `'half'`; the MATLAB names `Horizontal` / `Vertical` and the `semispan` aliases are accepted). **An unrecognised or missing marker falls back to `'full'`**, the historical pass-through behaviour.
+
+**Full span** — alpha comes from the incidence strut *above* the balance, so the balance stays level and its channels already **are** the wind-axis loads:
+
+```
+Lift = Fz      Roll  = Mx
+Drag = Fx      Pitch = My
+Side = Fy      Yaw   = Mz
+```
+
+**Half span** — the semispan model stands on the turntable and alpha **is** the yaw drive, so the balance rotates with the model. The horizontal channels are body-fixed and need the alpha rotation, and the vertical channel reads the model's **side** force, not lift:
+
+```
+Lift  = Fy·cos(alpha) - Fx·sin(alpha)
+Drag  = Fx·cos(alpha) + Fy·sin(alpha)
+Side  = Fz
+Roll  = Mx
+Pitch = Mz
+Yaw   = My
+```
+
+Reducing a half-span run with the full-span algorithm is what makes drag come out backwards: the missing `+Side·sin(alpha)` term is the whole induced-drag contribution, and "lift" is really the span-direction channel.
+
+> **Which alpha?** This rotation uses the **recorded** attitude, not the attitude offset applied one. The balance is bolted to the mount, so the angle between its axes and the flow is what the positioner recorded; an attitude offset moves the model *on* the mount. See [Attitude Offset](#attitude-offset-bent-sting-rectification).
+
+As on the internal path, air-on and air-off each resolve with **their own** alpha, so a tare taken at a different attitude still subtracts correctly.
+
+### Step 3: MRC Transfer
+
+**Source:** `transfer_external_loads_to_mrc()`
+
+The MATLAB pipeline never re-referenced external loads, so `mshift == [0, 0, 0]` short-circuits to a no-op and matches it exactly. With a nonzero shift, the rigid-body moment transfer is applied in model body axes (X back, Y right, Z up), with `mshift` the vector from the balance virtual centre to the model MRC:
+
+```
+M_mrc = M_bal - r x F
+
+Roll  = Roll  - (my·Fz - mz·Fy)
+Pitch = Pitch - (mz·Fx - mx·Fz)
+Yaw   = Yaw   - (mx·Fy - my·Fx)
+```
+
+These are the **resolved** moments from Step 2, not the raw `Mx/My/Mz` — on the half-span mount Pitch is `Mz` and Yaw is `My`.
+
+The wind-axis forces are rotated back to body axes to form F; on the half-span mount the resolution is a plane rotation, so it inverts directly rather than needing a 3x3 solve. Moments pass through BRF<->WRF unchanged, so they transfer straight back to the wind frame. Forces are untouched.
+
+### Where It Rejoins
+
+Tare subtraction ([Stage 6](#stage-6-tare-subtraction-air-off-removal)), tunnel conditions, coefficients and steady-state reduction are all shared. Because the balance emits no element-level data, `BRFForces` stays **empty** for an external run — the `N1/N2/Y1/Y2/Axial/Roll` element columns in the data table are blank, which is expected and not a sign that the run was misclassified.
+
+`EXTERNAL_CAL_BIAS` and `calc_uncertainty_ext_balance()` are ported from the MATLAB uncertainty routine and are used **only** for uncertainty estimation, not in the reduction above.
 
 ---
 
