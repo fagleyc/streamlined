@@ -19,6 +19,7 @@ from .transforms import (
 )
 from .external_balance import (external_loads_to_ips, resolve_external_wrf,
                                normalize_span_config,
+                               build_load_matrix_from_channels,
                                transfer_external_loads_to_mrc)
 from .coefficients import (
     AeroCoefficients, TunnelConditions,
@@ -226,13 +227,23 @@ def reduce_single_point(raw_on: Dict[str, np.ndarray],
         # offset moves the model on the mount, not the mount, and putting
         # it into this rotation would swing lift into the drag axis.
         span = normalize_span_config(raw_on.get('span_config'))
+        on_ips = external_loads_to_ips(raw_on)
+        off_ips = external_loads_to_ips(raw_off)
         result.wrf_on = resolve_external_wrf(
-            external_loads_to_ips(raw_on),
-            alpha_deg=alpha_raw, span_config=span)
+            on_ips, alpha_deg=alpha_raw, span_config=span)
         result.wrf_off = resolve_external_wrf(
-            external_loads_to_ips(raw_off),
-            alpha_deg=alpha_off_raw, span_config=span,
+            off_ips, alpha_deg=alpha_off_raw, span_config=span,
             n_samples=len(result.wrf_on.Lift))
+
+        # The balance's OWN six channels, before the mount-dependent
+        # resolution, in the same slot as an internal balance's elements
+        # (Fx, Fy, Fz, Mx, My, Mz -- see transforms.element_channels).
+        # This is the external analogue of the bridge elements: without
+        # it the element slots stay empty and an export writes six
+        # columns of zeros. The BRF force/moment attributes stay empty:
+        # there is no body-axis reduction on this path.
+        result.brf_on.elements = build_load_matrix_from_channels(on_ips)
+        result.brf_off.elements = build_load_matrix_from_channels(off_ips)
 
         # MRC shift. The MATLAB never re-referenced external loads
         # (equivalent to mshift == 0, which this is a no-op for), but

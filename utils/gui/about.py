@@ -6,7 +6,7 @@ Shared metadata template used across the wind-tunnel software ecosystem
 contact, and a compact version history (newest first).
 """
 
-__version__ = "1.3.8"
+__version__ = "1.3.9"
 APP_NAME = "Streamlined"
 AUTHOR = "C. Fagley"
 CONTACT = "casey.fagley@afacademy.af.edu"
@@ -15,6 +15,10 @@ CONTACT = "casey.fagley@afacademy.af.edu"
 # Dates for 1.2.4+ from the repository history; earlier dates from the
 # archived release zips in Versions/.
 VERSION_HISTORY = [
+    ("1.3.9", "2026-09-23",
+     "The six element channels are named by the balance that recorded "
+     "them (external Fx..Mz, internal N1.. or AftPitch..) and an "
+     "external run now fills them instead of exporting zeros"),
     ("1.3.8", "2026-09-22",
      "A legend you have moved stays put when data is added, instead of "
      "springing back to the corner; Clear All button on the case list"),

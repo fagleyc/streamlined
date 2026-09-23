@@ -27,6 +27,61 @@ class BRFForces:
     elements: np.ndarray = field(default_factory=lambda: np.array([]))
 
 
+#: The six element channels each balance produces, in the slot order of
+#: ``BRFForces.elements`` columns 0..5, with the unit each carries.
+#:
+#: An internal balance reads six bridges, all of them forces. An
+#: external balance reads three forces and three moments - so the names
+#: AND the units differ, and an export that assumes one balance mislabels
+#: the other. The external tuple must match
+#: :data:`external_balance.EXTERNAL_CHANNEL_ORDER`; a test pins that.
+_ELEMENT_CHANNELS = {
+    ('external', ''): (('Fx', 'force'), ('Fy', 'force'), ('Fz', 'force'),
+                       ('Mx', 'moment'), ('My', 'moment'),
+                       ('Mz', 'moment')),
+    ('internal', 'Moment'): (('AftPitch', 'force'), ('AftYaw', 'force'),
+                             ('FwdPitch', 'force'), ('FwdYaw', 'force'),
+                             ('Axial', 'force'), ('Roll', 'force')),
+    ('internal', 'Force'): (('N1', 'force'), ('N2', 'force'),
+                            ('Y1', 'force'), ('Y2', 'force'),
+                            ('Axial', 'force'), ('Roll', 'force')),
+}
+
+
+def element_channels(balance_type: str = '',
+                     balance_config: str = 'Force') -> tuple:
+    """The six element channels this balance produces, in slot order.
+
+    Returns a tuple of ``(name, unit_kind)`` pairs, where ``unit_kind``
+    is ``'force'`` or ``'moment'``, aligned with columns 0..5 of
+    ``BRFForces.elements``.
+
+    An unknown or empty ``balance_type`` reads as internal, and an
+    unrecognised ``balance_config`` as 'Force', which is the historical
+    default and what a run that records neither should still produce.
+
+    Parameters
+    ----------
+    balance_type : str
+        ``'external'`` (the ATE) or ``'internal'`` (a sting balance).
+    balance_config : str
+        ``'Force'`` or ``'Moment'``; ignored for an external balance,
+        which has only the one channel set.
+    """
+    if str(balance_type).strip().lower() == 'external':
+        return _ELEMENT_CHANNELS[('external', '')]
+    config = ('Moment' if str(balance_config).strip().lower() == 'moment'
+              else 'Force')
+    return _ELEMENT_CHANNELS[('internal', config)]
+
+
+def element_channel_names(balance_type: str = '',
+                          balance_config: str = 'Force') -> tuple:
+    """Just the six names, in slot order (see :func:`element_channels`)."""
+    return tuple(name for name, _ in
+                 element_channels(balance_type, balance_config))
+
+
 @dataclass
 class WRFForces:
     """Wind Reference Frame forces and moments."""

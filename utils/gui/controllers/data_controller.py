@@ -607,6 +607,14 @@ class ProcessingWorker(QRunnable):
 
                 # Store DAQ reference for later use
                 case.daq = daq
+                # Which balance produced this case, so the six element
+                # slots can be named for it downstream. Read from the
+                # data rather than the session setting: a directory is
+                # one balance, and the run files say which.
+                case.balance_type = ('internal' if needs_cal
+                                     else 'external')
+                case.balance_config = str(
+                    getattr(daq.fac, 'balance_config', 'Force') or 'Force')
 
                 # Transfer tunnel conditions and forces/moments from reduced data
                 if daq.red and len(daq.red) > 0:

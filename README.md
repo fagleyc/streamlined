@@ -440,7 +440,25 @@ The wind-axis forces are rotated back to body axes to form F; on the half-span m
 
 ### Where It Rejoins
 
-Tare subtraction ([Stage 6](#stage-6-tare-subtraction-air-off-removal)), tunnel conditions, coefficients and steady-state reduction are all shared. Because the balance emits no element-level data, `BRFForces` stays **empty** for an external run — the `N1/N2/Y1/Y2/Axial/Roll` element columns in the data table are blank, which is expected and not a sign that the run was misclassified.
+Tare subtraction ([Stage 6](#stage-6-tare-subtraction-air-off-removal)), tunnel conditions, coefficients and steady-state reduction are all shared.
+
+The balance's own six channels are kept in `BRFForces.elements`, the same slots an internal balance's bridge elements use, so they reach the table and the exports. The BRF force/moment attributes stay empty: there is no body-axis reduction on this path.
+
+### Element Channel Names
+
+**Source:** `transforms.py` -> `element_channels()`
+
+Every balance fills the same six slots (columns 0-5 of `BRFForces.elements`), but which channels those are depends on the balance, and so does the unit:
+
+| Balance | Slot 0-5 | Units |
+|---------|----------|-------|
+| External (ATE) | `Fx, Fy, Fz, Mx, My, Mz` | 3 forces, 3 **moments** |
+| Internal, Force config | `N1, N2, Y1, Y2, Axial, Roll` | 6 forces |
+| Internal, Moment config | `AftPitch, AftYaw, FwdPitch, FwdYaw, Axial, Roll` | 6 forces |
+
+The case records which balance produced it (`balance_type`, `balance_config`) at reduction time, read from the run files rather than the session setting, and the table columns, CSV/Excel headers and the unsteady MAT/HDF5 export all take their names and unit labels from it. A run recording neither reads as an internal Force balance, the historical default.
+
+The `elem_*` attribute names on a case are historical slot labels only — what a slot holds depends on the balance, so never label a column from them.
 
 `EXTERNAL_CAL_BIAS` and `calc_uncertainty_ext_balance()` are ported from the MATLAB uncertainty routine and are used **only** for uncertainty estimation, not in the reduction above.
 

@@ -23,11 +23,11 @@ from ..widgets.plot_canvas import PlotCanvas
 from ..utils.themes import DarkTheme
 
 
-def _element_names(balance_config: str = 'Force') -> list:
-    """Return element display names based on balance configuration."""
-    if balance_config == 'Moment':
-        return ['AftPitch', 'AftYaw', 'FwdPitch', 'FwdYaw', 'Axial', 'Roll']
-    return ['N1', 'N2', 'Y1', 'Y2', 'Axial', 'Roll']
+def _element_names(balance_config: str = 'Force',
+                   balance_type: str = '') -> list:
+    """The six element channel names, for the balance that recorded them."""
+    from utils.windtunnel.transforms import element_channel_names
+    return list(element_channel_names(balance_type, balance_config))
 
 
 class TimeHistoryPanel(QWidget):
@@ -247,6 +247,8 @@ class TimeHistoryPanel(QWidget):
                 'N1': 0, 'N2': 1, 'Y1': 2, 'Y2': 3,
                 'AftPitch': 0, 'AftYaw': 1, 'FwdPitch': 2, 'FwdYaw': 3,
                 'Axial': 4, 'Ax': 4, 'Roll': 5,
+                # External balance: the same six slots, its own names
+                'Fx': 0, 'Fy': 1, 'Fz': 2, 'Mx': 3, 'My': 4, 'Mz': 5,
             }
             col_idx = elem_col.get(key)
             if col_idx is None:

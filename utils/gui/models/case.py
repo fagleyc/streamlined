@@ -217,6 +217,17 @@ class TestCase:
     yaw_moments: np.ndarray = field(default_factory=lambda: np.array([]))
 
     # Balance element forces (stored in internal IPS units: lbf)
+    #: Which balance produced this case: 'external' (the ATE) or
+    #: 'internal' (a sting balance), and for an internal one which
+    #: channel set its calibration was fitted for. Together these name
+    #: the six element slots below - see transforms.element_channels.
+    balance_type: str = ''
+    balance_config: str = 'Force'
+
+    #: The six element channels, one array per SLOT (columns 0..5 of
+    #: BRFForces.elements). The slot names are historical - what each
+    #: slot actually holds depends on the balance, so never label them
+    #: from these attribute names.
     elem_N1: np.ndarray = field(default_factory=lambda: np.array([]))
     elem_N2: np.ndarray = field(default_factory=lambda: np.array([]))
     elem_Y1: np.ndarray = field(default_factory=lambda: np.array([]))
@@ -270,6 +281,21 @@ class TestCase:
         if np.isnan(nominal).any():
             return measured
         return nominal.reshape(measured.shape)
+
+    @property
+    def element_channels(self) -> tuple:
+        """The six element channels this case's balance produces.
+
+        A tuple of ``(name, unit_kind)`` pairs aligned with the elem_*
+        slots, so a table or an export labels them for the balance that
+        actually recorded them.
+        """
+        try:
+            from utils.windtunnel.transforms import element_channels
+        except Exception:                                  # noqa: BLE001
+            return (('N1', 'force'), ('N2', 'force'), ('Y1', 'force'),
+                    ('Y2', 'force'), ('Axial', 'force'), ('Roll', 'force'))
+        return element_channels(self.balance_type, self.balance_config)
 
     @property
     def point_alphas(self) -> np.ndarray:

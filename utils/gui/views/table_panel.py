@@ -169,6 +169,26 @@ class TablePanel(QWidget):
         # Initialize columns
         self._update_columns()
 
+    def _element_channels(self) -> tuple:
+        """The six element channels of the cases on display.
+
+        Taken from the selected case when there is one, so the columns
+        name the balance that actually recorded them. Cases from
+        different balances cannot share one set of columns, so the first
+        case with data decides and the rest follow; a directory is one
+        balance, so this only bites when two are loaded side by side.
+        """
+        from utils.windtunnel.transforms import element_channels
+        case_id = self.cmb_case.currentData() if hasattr(
+            self, 'cmb_case') else None
+        case = self.model.cases.get(case_id) if case_id else None
+        if case is None:
+            case = next((c for c in self.model.cases if c.has_data), None)
+        if case is not None:
+            return case.element_channels
+        return element_channels(
+            '', getattr(self.model, 'balance_config', 'Force'))
+
     def _get_unit_labels(self):
         """Get unit labels for the current output system."""
         if UNITS_AVAILABLE:
@@ -212,20 +232,15 @@ class TablePanel(QWidget):
         ]
 
         # Balance element force columns with dynamic unit labels
-        # Use moment-balance names if balance_config is 'Moment'
-        bal_cfg = getattr(self.model, 'balance_config', 'Force')
-        if bal_cfg == 'Moment':
-            e_names = ['AftPitch', 'AftYaw', 'FwdPitch', 'FwdYaw',
-                       'Axial', 'Roll']
-        else:
-            e_names = ['N1', 'N2', 'Y1', 'Y2', 'Axial', 'Roll']
+        # Name the six element slots for the balance that recorded
+        # them: an external balance reads Fx..Mz, three of which are
+        # MOMENTS, so the unit label varies per slot too.
+        channels = self._element_channels()
+        slots = ("elem_N1", "elem_N2", "elem_Y1", "elem_Y2",
+                 "elem_Ax", "elem_Roll")
         element_columns = [
-            ("elem_N1", f"{e_names[0]} [{labels.force}]"),
-            ("elem_N2", f"{e_names[1]} [{labels.force}]"),
-            ("elem_Y1", f"{e_names[2]} [{labels.force}]"),
-            ("elem_Y2", f"{e_names[3]} [{labels.force}]"),
-            ("elem_Ax", f"{e_names[4]} [{labels.force}]"),
-            ("elem_Roll", f"{e_names[5]} [{labels.force}]"),
+            (slot, f"{name} [{labels.moment if kind == 'moment' else labels.force}]")
+            for slot, (name, kind) in zip(slots, channels)
         ]
 
         # Tunnel condition columns with dynamic unit labels
@@ -1346,12 +1361,17 @@ class TablePanel(QWidget):
                     elems = elems_on - np.mean(elems_off, axis=0)
                 else:
                     elems = elems_on
-                bal_cfg = getattr(self.model, 'balance_config', 'Force')
-                if bal_cfg == 'Moment':
-                    elem_names = ['AftPitch', 'AftYaw', 'FwdPitch',
-                                  'FwdYaw', 'Axial', 'Roll']
-                else:
-                    elem_names = ['N1', 'N2', 'Y1', 'Y2', 'Axial', 'Roll']
+                # Which balance recorded this point comes from the
+                # point's own channels, not the session setting: the
+                # run file carries the marker.
+                from utils.windtunnel.transforms import (
+                    element_channel_names, is_external_balance_data)
+                air_on = getattr(pt, 'air_on', None) or {}
+                btype = ('external' if is_external_balance_data(air_on)
+                         else 'internal')
+                model = getattr(self, 'model', None)
+                elem_names = element_channel_names(
+                    btype, getattr(model, 'balance_config', 'Force'))
                 for col_idx, name in enumerate(elem_names):
                     data[f'element_{name}'] = elems[:, col_idx]
 
