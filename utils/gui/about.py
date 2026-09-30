@@ -6,7 +6,7 @@ Shared metadata template used across the wind-tunnel software ecosystem
 contact, and a compact version history (newest first).
 """
 
-__version__ = "1.3.9"
+__version__ = "1.3.10"
 APP_NAME = "Streamlined"
 AUTHOR = "C. Fagley"
 CONTACT = "casey.fagley@afacademy.af.edu"
@@ -15,6 +15,10 @@ CONTACT = "casey.fagley@afacademy.af.edu"
 # Dates for 1.2.4+ from the repository history; earlier dates from the
 # archived release zips in Versions/.
 VERSION_HISTORY = [
+    ("1.3.10", "2026-09-30",
+     "Exports carry the per-channel calibration beside the raw volts: "
+     "a Channel_Cal group in MAT, cal_slope/offset/unit/type attributes "
+     "on the Raw datasets in HDF5"),
     ("1.3.9", "2026-09-23",
      "The six element channels are named by the balance that recorded "
      "them (external Fx..Mz, internal N1.. or AftPitch..) and an "

@@ -169,6 +169,28 @@ class TablePanel(QWidget):
         # Initialize columns
         self._update_columns()
 
+    @staticmethod
+    def _channel_cal_for(case) -> dict:
+        """The per-channel calibration recorded with this case's runs.
+
+        Freestream records the tunnel channels as RAW VOLTS and attaches
+        the calibration that converts them
+        (``{channel: {slope, offset, unit, type}}``, where ``identity``
+        means the instrument already reports engineering units). It
+        rides in with the channels as a marker, so it is read back off
+        the first reduced point.
+
+        Returned empty for a run that carried none, in which case the
+        reduction used its built-in default slopes and there is nothing
+        channel-specific to record.
+        """
+        daq = getattr(case, 'daq', None)
+        for point in (getattr(daq, 'red', None) or []):
+            cal = (getattr(point, 'air_on', None) or {}).get('channel_cal')
+            if isinstance(cal, dict) and cal:
+                return cal
+        return {}
+
     def _element_channels(self) -> tuple:
         """The six element channels of the cases on display.
 
@@ -1273,6 +1295,26 @@ class TablePanel(QWidget):
                                  else np.asarray(arr))
             out['Raw'] = raw_sub
 
+        # The calibration that turns those raw volts into engineering
+        # units, one entry per calibrated channel, so the exported file
+        # is self-describing: Raw.Pdiff is volts, and
+        # Channel_Cal.Pdiff.slope is what converts it.
+        channel_cal = self._channel_cal_for(case)
+        if channel_cal:
+            cal_sub = {}
+            for name, entry in channel_cal.items():
+                if not isinstance(entry, dict):
+                    continue
+                safe = self._sanitize_matlab_name(str(name))
+                cal_sub[safe] = {
+                    'slope': np.float64(entry.get('slope', 1.0)),
+                    'offset': np.float64(entry.get('offset', 0.0)),
+                    'unit': str(entry.get('unit', '')),
+                    'type': str(entry.get('type', 'linear')),
+                }
+            if cal_sub:
+                out['Channel_Cal'] = cal_sub
+
         # Axis vectors + dim order for the (alpha, beta, mach) grid, so the
         # 3-D arrays above are self-describing in MATLAB.
         if axes3d is not None:
@@ -1803,6 +1845,15 @@ class TablePanel(QWidget):
                     # channel's per-point mean.
                     categorized = self._build_categorized_struct(
                         case)
+                    # Channel_Cal is metadata, not arrays: it goes on
+                    # the Raw datasets as attributes instead, under the
+                    # same four names freestream writes on a run file
+                    # (cal_slope/cal_offset/cal_unit/cal_type). The
+                    # export nests a case group above Raw, so this is
+                    # not a run file and does not read back as one - but
+                    # anything opening it sees each raw channel labelled
+                    # with the calibration that converts it.
+                    channel_cal = categorized.pop('Channel_Cal', None)
                     for cat_key, sub in categorized.items():
                         sub_grp = case_grp.create_group(cat_key)
                         for name, arr in sub.items():
@@ -1811,6 +1862,16 @@ class TablePanel(QWidget):
                                     name, data=np.asarray(arr))
                             except Exception:
                                 pass
+                    if channel_cal and 'Raw' in case_grp:
+                        raw_grp = case_grp['Raw']
+                        for name, entry in channel_cal.items():
+                            if name not in raw_grp:
+                                continue
+                            attrs = raw_grp[name].attrs
+                            attrs['cal_slope'] = float(entry['slope'])
+                            attrs['cal_offset'] = float(entry['offset'])
+                            attrs['cal_unit'] = str(entry['unit'])
+                            attrs['cal_type'] = str(entry['type'])
 
                     # Custom calculator outputs: means and stds
                     custom_means = getattr(

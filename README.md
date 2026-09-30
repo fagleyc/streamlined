@@ -444,6 +444,32 @@ Tare subtraction ([Stage 6](#stage-6-tare-subtraction-air-off-removal)), tunnel 
 
 The balance's own six channels are kept in `BRFForces.elements`, the same slots an internal balance's bridge elements use, so they reach the table and the exports. The BRF force/moment attributes stay empty: there is no body-axis reduction on this path.
 
+### Raw Channels and Their Calibration
+
+The tunnel channels (`Pdiff`, `Ptot`, `Temp`) are recorded as **raw
+volts**, with the calibration that converts them stored alongside:
+
+| Attribute | Meaning |
+|-----------|---------|
+| `cal_slope`, `cal_offset` | `engineering = volts * slope + offset` |
+| `cal_unit` | the unit the calibration PRODUCES (`psid`, `psia`, `degC`, ...), converted to the chain's internal units afterwards |
+| `cal_type` | `linear` (apply the above) or `identity` (a smart indicator such as a Heise already reports engineering units, so there are no volts to scale) |
+
+The reduction applies this in `coefficients.py` ->
+`_pressure_channel_to_psi()` / `_temperature_channel_to_celsius()`, in
+priority order: the injected per-channel calibration, then a legacy
+external `.pcf`, then the built-in DaqBook default slopes. A run
+carrying no calibration therefore still reduces, on those defaults.
+
+Exports keep the pair together, so an exported file is self-describing
+rather than a column of unlabelled volts:
+
+- **MAT** — a `Channel_Cal` group beside `Raw`, with `slope`, `offset`, `unit` and `type` per channel
+- **HDF5** — the same four `cal_*` attribute names on each `Raw` dataset
+
+Only calibrated channels get an entry. The balance channels are already
+in engineering units and carry none.
+
 ### Element Channel Names
 
 **Source:** `transforms.py` -> `element_channels()`
