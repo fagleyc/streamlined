@@ -459,8 +459,49 @@ class TestCase:
             'CRoll_std': self.CRoll_std,
             'CPitch_std': self.CPitch_std, 'Cm_std': self.CPitch_std,
             'CYaw_std': self.CYaw_std, 'Cn_std': self.CYaw_std,
+            # Wind-axis loads (lbf, lb-in at the MRC; air-on minus tare)
+            'Lift': self.lift_forces, 'Drag': self.drag_forces,
+            'Side': self.side_forces,
+            'RollMoment': self.roll_moments,
+            'PitchMoment': self.pitch_moments,
+            'YawMoment': self.yaw_moments,
+            # Balance elements (lbf; slot 6 is the roll moment, lb-in)
+            'elem_N1': self.elem_N1, 'elem_N2': self.elem_N2,
+            'elem_Y1': self.elem_Y1, 'elem_Y2': self.elem_Y2,
+            'elem_Ax': self.elem_Ax, 'elem_Roll': self.elem_Roll,
+            # Remaining tunnel conditions (kg/m^3, degC, psi)
+            'rho': self.densities, 'T': self.temperatures,
+            'P0': self.total_pressures,
         }
+        if name in ('Fx', 'Fy', 'Fz', 'Mx', 'My', 'Mz'):
+            return self.body_loads().get(name, np.array([]))
         return coeff_map.get(name, np.array([]))
+
+    def body_loads(self) -> Dict[str, np.ndarray]:
+        """Body-axis loads: the wind-axis loads rotated back through each
+        point's measured alpha/beta (exact inverse of calc_wrf_forces).
+        Moments are carried unrotated, as calc_wrf_forces carries them.
+        Empty arrays when the wind loads are not aligned with the points.
+        """
+        from ..plot_variables import body_from_wind
+        alphas = np.asarray(self.alphas, dtype=float)
+        fx, fy, fz = body_from_wind(self.lift_forces, self.drag_forces,
+                                    self.side_forces, alphas, self.betas)
+        if fx.size != alphas.size:
+            empty = np.array([])
+            return {k: empty for k in ('Fx', 'Fy', 'Fz', 'Mx', 'My', 'Mz')}
+        shape = alphas.shape
+
+        def _moment(arr):
+            arr = np.asarray(arr, dtype=float)
+            if arr.size != alphas.size:
+                return np.array([])
+            return arr.reshape(shape)
+        return {'Fx': fx.reshape(shape), 'Fy': fy.reshape(shape),
+                'Fz': fz.reshape(shape),
+                'Mx': _moment(self.roll_moments),
+                'My': _moment(self.pitch_moments),
+                'Mz': _moment(self.yaw_moments)}
 
     def get_sweep_at_beta(self, beta: float, tolerance: float = 0.5) -> Dict[str, np.ndarray]:
         """Extract data at a specific beta angle."""

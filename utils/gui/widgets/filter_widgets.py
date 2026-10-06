@@ -263,55 +263,33 @@ class FilterToolbar(QWidget):
 
 class PlotTypeSelector(QWidget):
     """
-    Widget for selecting plot type.
+    The plot's axis selector: a Y Axis list of every available quantity,
+    grouped (coefficients, wind-axis loads, body-axis loads, balance
+    elements, tunnel conditions, attitude, stability derivatives,
+    calculator outputs), and an X Axis list.
+
+    The groups and labels come from :mod:`utils.gui.plot_variables`, so a
+    quantity added there appears here. Group headers are disabled rows.
 
     Signals
     -------
     plot_type_changed : pyqtSignal(str)
-        Emitted when plot type changes
+        Emitted with the Y variable key whenever either axis changes
+        (name kept for the panel wiring).
     """
 
     plot_type_changed = pyqtSignal(str)
 
-    PLOT_TYPES = [
-        ("CL vs Alpha", "CL_VS_ALPHA", "Lift coefficient vs angle of attack"),
-        ("CD vs Alpha", "CD_VS_ALPHA", "Drag coefficient vs angle of attack"),
-        ("Drag Polar", "CL_VS_CD", "Lift vs drag (drag polar)"),
-        ("Cm vs Alpha", "CM_VS_ALPHA", "Pitching moment vs angle of attack"),
-        ("Cm vs CL", "CM_VS_CL", "Pitching moment vs lift coefficient"),
-        ("L/D vs Alpha", "LD_VS_ALPHA", "Lift-to-drag ratio vs angle of attack"),
-        ("CY vs Alpha", "CY_VS_ALPHA", "Side force coefficient vs angle of attack"),
-        ("Cl (roll) vs Alpha", "CROLL_VS_ALPHA", "Rolling moment vs angle of attack"),
-        ("Cn (yaw) vs Alpha", "CYAW_VS_ALPHA", "Yawing moment vs angle of attack"),
-        ("Lateral", "LATERAL_VS_BETA", "Lateral-directional coefficients"),
-        # Stability derivatives (central-difference)
-        ("Cma vs Alpha", "CMA_VS_ALPHA",
-         "Longitudinal stability slope dCm/dalpha (central diff)"),
-        ("CLa vs Alpha", "CLA_VS_ALPHA",
-         "Lift curve slope dCL/dalpha (central diff)"),
-        ("Static Margin vs Alpha", "SM_VS_ALPHA",
-         "Static margin -Cma/CLa"),
-        ("CYb vs Alpha", "CYB_VS_ALPHA",
-         "Side-force derivative dCY/dbeta (requires >= 2 betas)"),
-        ("Cnb vs Alpha", "CNB_VS_ALPHA",
-         "Directional stability dCn/dbeta (requires >= 2 betas)"),
-        ("Clb vs Alpha", "CLB_VS_ALPHA",
-         "Lateral stability dCl/dbeta (requires >= 2 betas)"),
-    ]
-
-    # X-axis variables the user can plot against, overriding the one the
-    # plot type implies.  The empty value means "whatever the plot type
-    # says", which is the default and the historical behavior.
-    #
-    # Mach / Re / q / U_inf are SPEED-sweep variables: picking one of them
-    # makes each alpha/beta point its own trace across the speed steps,
-    # instead of each speed step its own alpha sweep.
+    # X-axis variables. The empty value means alpha (the historical
+    # default). Mach / Re / q / U_inf are SPEED-sweep variables: picking
+    # one makes each alpha/beta point its own trace across the speed
+    # steps, instead of each speed step its own alpha sweep.
     X_AXIS_VARS = [
-        ("Default", "",
-         "Use the x variable the selected plot type defines"),
-        ("\u03b1  alpha", "Alpha",
+        ("α  alpha (default)", "",
          "Angle of attack [deg]; one trace per sideslip and speed step"),
-        ("\u03b2  beta", "Beta",
+        ("α  alpha", "Alpha",
+         "Angle of attack [deg]; one trace per sideslip and speed step"),
+        ("β  beta", "Beta",
          "Sideslip angle [deg]; one trace per angle of attack"),
         ("Mach", "Mach",
          "Measured freestream Mach; one trace per alpha/beta, so a "
@@ -321,10 +299,10 @@ class PlotTypeSelector(QWidget):
         ("q", "Q",
          "Dynamic pressure, in the output unit system; "
          "one trace per alpha/beta"),
-        ("U\u221e", "U_inf",
+        ("U∞", "U_inf",
          "Freestream velocity, in the output unit system; "
          "one trace per alpha/beta"),
-        ("CL", "Cl", "Lift coefficient on the x axis"),
+        ("CL", "Cl", "Lift coefficient on the x axis (drag polar: CD)"),
         ("CD", "Cd", "Drag coefficient on the x axis"),
         ("CY", "Cs", "Side-force coefficient on the x axis"),
         ("Cl (roll)", "CRoll", "Rolling-moment coefficient on the x axis"),
@@ -333,39 +311,36 @@ class PlotTypeSelector(QWidget):
         ("L/D", "L/D", "Lift-to-drag ratio on the x axis"),
     ]
 
+    DEFAULT_Y = "Cl"
+
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._custom: list = []
+        self._element_names: list = []
         self._setup_ui()
 
     def _setup_ui(self):
-        # 3-row grid: Plot Type, X Axis, Custom Y, so all three axis
-        # controls line up under their respective labels.
         from PyQt6.QtWidgets import QGridLayout
         layout = QGridLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setHorizontalSpacing(8)
         layout.setVerticalSpacing(4)
 
-        label = QLabel("Plot Type:")
-        layout.addWidget(label, 0, 0)
+        layout.addWidget(QLabel("Y Axis:"), 0, 0)
+        self.cmb_y_axis = QComboBox()
+        self.cmb_y_axis.setMinimumWidth(200)
+        self.cmb_y_axis.setMaxVisibleItems(30)
+        self.cmb_y_axis.setToolTip(
+            "Quantity to plot: coefficients, wind- or body-axis forces and "
+            "moments, balance elements, tunnel conditions, stability "
+            "derivatives or calculator outputs")
+        self._fill_y()
+        self.cmb_y_axis.currentIndexChanged.connect(self._on_changed)
+        layout.addWidget(self.cmb_y_axis, 0, 1)
 
-        self.cmb_plot_type = QComboBox()
-        self.cmb_plot_type.setMinimumWidth(180)
-
-        for display_name, value, tooltip in self.PLOT_TYPES:
-            self.cmb_plot_type.addItem(display_name, value)
-            idx = self.cmb_plot_type.count() - 1
-            self.cmb_plot_type.setItemData(idx, tooltip, Qt.ItemDataRole.ToolTipRole)
-
-        self.cmb_plot_type.currentIndexChanged.connect(self._on_changed)
-        layout.addWidget(self.cmb_plot_type, 0, 1)
-
-        # X-axis override - when set, replaces the x variable the plot
-        # type implies.  Custom calculator variables are appended after
-        # the built-ins by populate_custom_vars().
         layout.addWidget(QLabel("X Axis:"), 1, 0)
         self.cmb_x_axis = QComboBox()
-        self.cmb_x_axis.setMinimumWidth(180)
+        self.cmb_x_axis.setMinimumWidth(200)
         for display_name, value, tooltip in self.X_AXIS_VARS:
             self.cmb_x_axis.addItem(display_name, value)
             idx = self.cmb_x_axis.count() - 1
@@ -374,40 +349,84 @@ class PlotTypeSelector(QWidget):
         self._n_builtin_x = self.cmb_x_axis.count()
         self.cmb_x_axis.currentIndexChanged.connect(self._on_changed)
         layout.addWidget(self.cmb_x_axis, 1, 1)
-
-        # Custom Y override - when set, overrides the y variable from
-        # the plot type.  Populated dynamically from active calculator
-        # rules via populate_custom_vars().
-        self.lbl_custom = QLabel("Custom Y:")
-        layout.addWidget(self.lbl_custom, 2, 0)
-        self.cmb_custom_y = QComboBox()
-        self.cmb_custom_y.setMinimumWidth(180)
-        self.cmb_custom_y.addItem("(none)", "")
-        self.cmb_custom_y.currentIndexChanged.connect(self._on_changed)
-        layout.addWidget(self.cmb_custom_y, 2, 1)
         layout.setColumnStretch(1, 1)
 
+    # ── Y list ──────────────────────────────────────────────────────────
+    def _fill_y(self, keep: str = ""):
+        from PyQt6.QtGui import QFont
+        from ..plot_variables import grouped
+        current = keep or (self.get_y_var() if self.cmb_y_axis.count()
+                           else self.DEFAULT_Y)
+        self.cmb_y_axis.blockSignals(True)
+        self.cmb_y_axis.clear()
+        model = self.cmb_y_axis.model()
+        for group, variables in grouped(self._custom, self._element_names):
+            self.cmb_y_axis.addItem(group.upper(), None)
+            header = model.item(self.cmb_y_axis.count() - 1)
+            header.setEnabled(False)
+            font = QFont(header.font())
+            font.setBold(True)
+            font.setPointSizeF(max(font.pointSizeF() - 1, 7))
+            header.setFont(font)
+            for var in variables:
+                self.cmb_y_axis.addItem("    " + var.label, var.key)
+                if var.tip:
+                    self.cmb_y_axis.setItemData(
+                        self.cmb_y_axis.count() - 1, var.tip,
+                        Qt.ItemDataRole.ToolTipRole)
+        self.cmb_y_axis.blockSignals(False)
+        self.set_y_var(current or self.DEFAULT_Y, emit=False)
+
+    def set_element_names(self, names):
+        """Relabel the six balance elements with the recording balance's
+        channel names (N1.. / AftPitch.. / Fx..)."""
+        names = list(names or [])
+        if names != self._element_names:
+            self._element_names = names
+            self._fill_y(self.get_y_var())
+
+    # ── signals / accessors ─────────────────────────────────────────────
     def _on_changed(self, index):
-        value = self.cmb_plot_type.currentData()
-        self.plot_type_changed.emit(value)
+        self.plot_type_changed.emit(self.get_y_var())
+
+    def get_y_var(self) -> str:
+        """Key of the quantity on the Y axis."""
+        return self.cmb_y_axis.currentData() or self.DEFAULT_Y
+
+    def set_y_var(self, key: str, emit: bool = True) -> bool:
+        """Select a Y quantity by key; False (selection unchanged) when the
+        list does not offer it."""
+        for i in range(self.cmb_y_axis.count()):
+            if self.cmb_y_axis.itemData(i) == key:
+                if not emit:
+                    self.cmb_y_axis.blockSignals(True)
+                self.cmb_y_axis.setCurrentIndex(i)
+                self.cmb_y_axis.blockSignals(False)
+                return True
+        return False
 
     def get_plot_type(self) -> str:
-        """Get current plot type."""
-        return self.cmb_plot_type.currentData()
+        """Back-compat alias: the Y variable key."""
+        return self.get_y_var()
 
     def set_plot_type(self, plot_type: str):
-        """Set current plot type."""
-        for i in range(self.cmb_plot_type.count()):
-            if self.cmb_plot_type.itemData(i) == plot_type:
-                self.cmb_plot_type.setCurrentIndex(i)
-                break
+        """Back-compat: an old PlotType name (CL_VS_CD, ...) selects the
+        equivalent X/Y pair; a variable key selects that Y quantity."""
+        from ..plot_variables import LEGACY_PLOT_TYPES
+        if plot_type in LEGACY_PLOT_TYPES:
+            x_var, y_var = LEGACY_PLOT_TYPES[plot_type]
+            self.set_x_var("" if x_var == "Alpha" else x_var)
+            self.set_y_var(y_var)
+        else:
+            self.set_y_var(plot_type)
 
     def get_custom_y_var(self) -> str:
-        """Return the user-selected custom Y variable (empty string if none)."""
-        return self.cmb_custom_y.currentData() or ""
+        """Back-compat: the Y quantity when it is a calculator output."""
+        key = self.get_y_var()
+        return key if key in self._custom else ""
 
     def get_x_var(self) -> str:
-        """Return the selected x variable, or "" for the plot-type default."""
+        """Return the selected x variable, or "" for the alpha default."""
         return self.cmb_x_axis.currentData() or ""
 
     def set_x_var(self, var: str):
@@ -419,27 +438,12 @@ class PlotTypeSelector(QWidget):
         self.cmb_x_axis.setCurrentIndex(0)
 
     def populate_custom_vars(self, names: list):
-        """Re-populate the custom-variable entries of both axis combos.
+        """Offer calculator outputs on BOTH axes: in the Y list's
+        'Calculator outputs' group, and appended after the built-in x
+        variables. Each combo keeps its selection when it still exists."""
+        self._custom = list(names)
+        self._fill_y(self.get_y_var())
 
-        Calculator outputs are offered on BOTH axes: as the Y override, and
-        appended after the built-ins as an x variable.  Each combo keeps its
-        current selection when that variable still exists.
-        """
-        current = self.cmb_custom_y.currentData()
-        self.cmb_custom_y.blockSignals(True)
-        self.cmb_custom_y.clear()
-        self.cmb_custom_y.addItem("(none)", "")
-        for n in names:
-            self.cmb_custom_y.addItem(n, n)
-        if current:
-            for i in range(self.cmb_custom_y.count()):
-                if self.cmb_custom_y.itemData(i) == current:
-                    self.cmb_custom_y.setCurrentIndex(i)
-                    break
-        self.cmb_custom_y.blockSignals(False)
-
-        # X axis keeps its built-in entries; only the appended ones are
-        # replaced, so a built-in selection survives a calculator edit.
         current_x = self.cmb_x_axis.currentData()
         self.cmb_x_axis.blockSignals(True)
         while self.cmb_x_axis.count() > self._n_builtin_x:

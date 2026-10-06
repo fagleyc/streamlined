@@ -17,6 +17,7 @@ from PyQt6.QtGui import QCursor
 
 from ..models.data_model import DataModel, PlotType
 from ..models.case import TestCase
+from .. import plot_variables as pv
 from ..widgets.filter_widgets import MultiSelectFilter, PlotTypeSelector, FilterToolbar
 from ..utils.themes import DarkTheme
 from ..utils.icons import Icons
@@ -49,7 +50,7 @@ class PlotControlsWidget(QWidget):
         layout.setSpacing(12)
 
         # Plot type selector
-        type_group = QGroupBox("Plot Type")
+        type_group = QGroupBox("Plot Axes")
         type_layout = QVBoxLayout(type_group)
 
         self.plot_selector = PlotTypeSelector()
@@ -256,13 +257,15 @@ class PlotPanel(QWidget):
             show_all_betas=sel_betas is None,
         )
 
-    def _on_plot_type_changed(self, plot_type_str: str):
-        """Handle plot type change."""
-        try:
-            plot_type = PlotType[plot_type_str]
-            self.model.set_plot_type(plot_type)
-        except KeyError:
-            pass
+    def _on_plot_type_changed(self, y_var: str):
+        """Y (or X) axis selection changed: record it on the plot config,
+        which redraws."""
+        x_var = self.plot_controls.get_x_var() or "Alpha"
+        units = self.model.output_units
+        self.model.set_plot_config(
+            x_var=x_var, y_var=y_var,
+            x_label=pv.axis_label(x_var, units),
+            y_label=pv.axis_label(y_var, units, self._element_names()))
 
     def _on_options_changed(self):
         """Handle options change (grid, legend, linewidth)."""
@@ -310,7 +313,8 @@ class PlotPanel(QWidget):
         # Set labels
         self.plot_canvas.set_labels(
             xlabel=self._x_axis_label(x_var, config),
-            ylabel=config.y_label
+            ylabel=pv.axis_label(y_var, self.model.output_units,
+                                 self._element_names())
         )
 
         # Grid and legend
@@ -322,41 +326,21 @@ class PlotPanel(QWidget):
 
         self.plot_canvas.refresh()
 
-    def _get_axis_vars(self, plot_type: PlotType):
-        """Get X and Y variable names for plot type.
+    def _get_axis_vars(self, plot_type=None):
+        """(x_var, y_var) from the axis selector. ``plot_type`` is ignored
+        (kept for callers of the old Plot Type API)."""
+        sel = self.plot_controls.plot_selector
+        return (sel.get_x_var() or "Alpha"), sel.get_y_var()
 
-        If the Custom Y dropdown is set, its value overrides the y_var
-        for the current plot type while keeping the same x_var.
-        """
-        var_map = {
-            PlotType.CL_VS_ALPHA: ("Alpha", "Cl"),
-            PlotType.CD_VS_ALPHA: ("Alpha", "Cd"),
-            PlotType.CL_VS_CD: ("Cd", "Cl"),
-            PlotType.CM_VS_ALPHA: ("Alpha", "CPitch"),
-            PlotType.CM_VS_CL: ("Cl", "CPitch"),
-            PlotType.LD_VS_ALPHA: ("Alpha", "L/D"),
-            PlotType.LATERAL_VS_BETA: ("Beta", "Lateral"),
-            PlotType.CY_VS_ALPHA: ("Alpha", "Cs"),
-            PlotType.CROLL_VS_ALPHA: ("Alpha", "CRoll"),
-            PlotType.CYAW_VS_ALPHA: ("Alpha", "CYaw"),
-            # Stability derivatives (central-difference, per deg)
-            PlotType.CMA_VS_ALPHA: ("Alpha", "Cma"),
-            PlotType.CLA_VS_ALPHA: ("Alpha", "CLa"),
-            PlotType.SM_VS_ALPHA: ("Alpha", "StaticMargin"),
-            PlotType.CYB_VS_ALPHA: ("Alpha", "CYb"),
-            PlotType.CNB_VS_ALPHA: ("Alpha", "Cnb"),
-            PlotType.CLB_VS_ALPHA: ("Alpha", "Clb"),
-        }
-        x_var, y_var = var_map.get(plot_type, ("Alpha", "Cl"))
-
-        # Custom Y override - pulls from PlotTypeSelector dropdown
-        try:
-            custom_y = self.plot_controls.plot_selector.get_custom_y_var()
-        except Exception:
-            custom_y = ""
-        if custom_y:
-            y_var = custom_y
-        return x_var, y_var
+    def _element_names(self) -> list:
+        """Channel names of the first visible case's balance elements."""
+        for case in self.model.cases:
+            if getattr(case, 'visible', True) and case.has_data:
+                try:
+                    return [n for n, _k in case.element_channels]
+                except Exception:                      # noqa: BLE001
+                    return []
+        return []
 
     def _unit_labels(self):
         """Unit labels for the model's output unit system, or None."""
@@ -374,7 +358,7 @@ class PlotPanel(QWidget):
         calculator output (whose units only the user knows).
         """
         if not self.plot_controls.get_x_var():
-            return config.x_label
+            return pv.axis_label('Alpha')
         label = _X_AXIS_LABELS.get(x_var)
         if label is None:
             return x_var
@@ -403,6 +387,11 @@ class PlotPanel(QWidget):
         if x_var == 'Q':
             return conv.convert_pressure(data)
         return conv.convert_velocity(data)
+
+    def _convert_y(self, data: np.ndarray, y_var: str) -> np.ndarray:
+        """Dimensional y data (forces, moments, q, ...) into the output
+        unit system, exactly as the x axis and the table convert it."""
+        return pv.convert(data, y_var, self.model.output_units)
 
     def _get_linewidth(self) -> float:
         """Get the current line width setting."""
@@ -554,7 +543,7 @@ class PlotPanel(QWidget):
                 for idx, i in enumerate(alpha_rows):
                     x_data = self._convert_x(
                         self._get_row_data(case, x_var, i)[beta_cols], x_var)
-                    y_data = self._get_row_data(case, y_var, i)[beta_cols]
+                    y_data = self._convert_y(self._get_row_data(case, y_var, i)[beta_cols], y_var)
 
                     if len(x_data) == 0 or len(y_data) == 0:
                         continue
@@ -612,7 +601,7 @@ class PlotPanel(QWidget):
             for idx, j in enumerate(beta_cols):
                 x_data = self._convert_x(
                     self._get_col_data(case, x_var, j)[alpha_rows], x_var)
-                y_data = self._get_col_data(case, y_var, j)[alpha_rows]
+                y_data = self._convert_y(self._get_col_data(case, y_var, j)[alpha_rows], y_var)
 
                 if len(x_data) == 0 or len(y_data) == 0:
                     continue
@@ -691,8 +680,8 @@ class PlotPanel(QWidget):
                     x_data = self._convert_x(
                         self._get_var_data_1d(case, x_var, mask), x_var
                     )[sort_order]
-                    y_data = self._get_var_data_1d(
-                        case, y_var, mask)[sort_order]
+                    y_data = self._convert_y(self._get_var_data_1d(
+                        case, y_var, mask)[sort_order], y_var)
 
                     if len(x_data) == 0 or len(y_data) == 0:
                         continue
@@ -786,7 +775,7 @@ class PlotPanel(QWidget):
                     x_data = self._convert_x(
                         self._get_var_data_1d(case, x_var, mask),
                         x_var)[sort_order]
-                    y_data = self._get_var_data_1d(case, y_var, mask)[sort_order]
+                    y_data = self._convert_y(self._get_var_data_1d(case, y_var, mask)[sort_order], y_var)
 
                     if len(x_data) == 0 or len(y_data) == 0:
                         continue
@@ -874,7 +863,8 @@ class PlotPanel(QWidget):
 
             x_data = self._convert_x(
                 self._get_var_data_1d(case, x_var, mask), x_var)
-            y_data = self._get_var_data_1d(case, y_var, mask)
+            y_data = self._convert_y(
+                self._get_var_data_1d(case, y_var, mask), y_var)
             if len(x_data) == 0 or len(y_data) == 0:
                 continue
 
@@ -1095,3 +1085,7 @@ class PlotPanel(QWidget):
 
         machs = self.model.cases.all_mach_numbers
         self.filter_toolbar.set_mach_values(machs)
+
+        # name the balance-element entries for the balance in use
+        self.plot_controls.plot_selector.set_element_names(
+            self._element_names())

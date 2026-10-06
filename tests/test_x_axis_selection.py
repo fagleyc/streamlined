@@ -133,8 +133,8 @@ class TestComboContents:
         sel.populate_custom_vars(["Cp1", "Cp2"])
         x_offered = {sel.cmb_x_axis.itemData(i)
                      for i in range(sel.cmb_x_axis.count())}
-        y_offered = {sel.cmb_custom_y.itemData(i)
-                     for i in range(sel.cmb_custom_y.count())}
+        y_offered = {sel.cmb_y_axis.itemData(i)
+                     for i in range(sel.cmb_y_axis.count())}
         assert {"Cp1", "Cp2"} <= x_offered
         assert {"Cp1", "Cp2"} <= y_offered
         # The built-ins survive alongside them
