@@ -89,6 +89,29 @@ class CalibrationSection(QFrame):
             self.txt_balance.setText(Path(filepath).name)
             self.balance_loaded.emit(filepath)
 
+    def set_external_mode(self, external: bool):
+        """Disable the .vol input for an external balance.
+
+        An external balance streams resolved loads in engineering
+        units, so there is no bridge-volts calibration to load. Greying
+        the control says that plainly instead of leaving an input that
+        cannot help.
+        """
+        self.btn_balance.setEnabled(not external)
+        self.txt_balance.setEnabled(not external)
+        if external:
+            self.txt_balance.setPlaceholderText(
+                "not required — external balance")
+            self.btn_balance.setToolTip(
+                "External balance: loads arrive already resolved, so no "
+                ".vol calibration applies")
+            self.lbl_status.setText(
+                "External balance — no .vol required")
+        else:
+            self.txt_balance.setPlaceholderText("No file loaded")
+            self.btn_balance.setToolTip(
+                "Load balance calibration (.vol)")
+
     def set_balance_file(self, filepath: str):
         """Set the balance file display."""
         self.txt_balance.setText(Path(filepath).name if filepath else "")
@@ -143,6 +166,8 @@ class DataPanel(QWidget):
                 border: none;
                 border-bottom: 1px solid {DarkTheme.BORDER};
             }}
+            /* labels are QFrames too — keep them unboxed */
+            QLabel {{ border: none; background: transparent; }}
         """)
         layout.addWidget(self.cal_section)
 
@@ -154,6 +179,8 @@ class DataPanel(QWidget):
                 border: none;
                 border-bottom: 1px solid {DarkTheme.BORDER};
             }}
+            /* labels are QFrames too — keep them unboxed */
+            QLabel {{ border: none; background: transparent; }}
         """)
         geo_layout = QHBoxLayout(geo_frame)
         geo_layout.setContentsMargins(12, 8, 12, 8)
@@ -179,6 +206,8 @@ class DataPanel(QWidget):
                 border: none;
                 border-bottom: 1px solid {DarkTheme.BORDER};
             }}
+            /* labels are QFrames too — keep them unboxed */
+            QLabel {{ border: none; background: transparent; }}
         """)
         load_layout = QVBoxLayout(load_frame)
         load_layout.setContentsMargins(12, 8, 12, 8)
@@ -197,7 +226,7 @@ class DataPanel(QWidget):
         btn_layout.addWidget(self.btn_load_dir)
 
         self.btn_process = QPushButton("Process Data")
-        self.btn_process.setIcon(Icons.play())
+        self.btn_process.setIcon(Icons.play("ON_ACCENT"))  # on the blue button
         self.btn_process.setToolTip("Process loaded data")
         self.btn_process.setProperty("primary", True)
         self.btn_process.clicked.connect(self.process_requested.emit)
@@ -230,10 +259,36 @@ class DataPanel(QWidget):
         self.case_list.case_visibility_changed.connect(self._on_case_visibility_changed)
         self.case_list.case_color_changed.connect(self._on_case_color_changed)
         self.case_list.add_requested.connect(self._on_add_case_requested)
+        self.case_list.clear_all_requested.connect(
+            self._on_clear_all_requested)
+
+    def set_balance_type(self, balance_type: str):
+        """Route a detected run balance type to the calibration panel."""
+        self.cal_section.set_external_mode(
+            str(balance_type).lower() == "external")
 
     def _on_case_delete(self, case_id: str):
         """Handle case delete request."""
         self.case_delete_requested.emit(case_id)
+
+    def _on_clear_all_requested(self):
+        """Drop every loaded case, after confirming.
+
+        This throws away the whole reduction - geometry and calibration
+        assignments included - so it asks first. Nothing on disk is
+        touched; the run directories can simply be loaded again.
+        """
+        n = len(list(self.model.cases))
+        if n == 0:
+            return
+        reply = QMessageBox.question(
+            self, "Clear All Cases",
+            f"Remove all {n} loaded case(s)?\n\n"
+            "The data files on disk are not affected.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No)
+        if reply == QMessageBox.StandardButton.Yes:
+            self.model.clear_all()
 
     def _on_case_visibility_changed(self, case_id: str, visible: bool):
         """Handle case visibility change."""

@@ -14,12 +14,15 @@ from typing import Dict
 class Icons:
     """
     Application icons using inline SVG data.
-    All icons are designed for dark theme (light colored).
+
+    With no explicit color an icon is drawn in the ACTIVE theme's text
+    color at paint time (themekit icon engine), so it stays legible when
+    the user flips between light and dark themes.
     """
 
-    # Icon color for dark theme
-    COLOR = "#e0e0e0"
-    ACCENT = "#0078d4"
+    # theme tokens (resolved per paint); pass a hex to pin a color
+    COLOR = "TEXT"
+    ACCENT = "ACCENT"
 
     # SVG Templates
     _FOLDER_OPEN = '''<svg viewBox="0 0 24 24" fill="{color}">
@@ -122,11 +125,30 @@ class Icons:
         <path d="M3 17v2h6v-2H3zM3 5v2h10V5H3zm10 16v-2h8v-2h-8v-2h-2v6h2zM7 9v2H3v2h4v2h2V9H7zm14 4v-2H11v2h10zm-6-4h2V7h4V5h-4V3h-2v6z"/>
     </svg>'''
 
+    #: cacheKey → SVG template, so an icon can be re-issued in another
+    #: token (toolbar buttons on the header use HEADER_TEXT)
+    _templates: Dict[int, str] = {}
+
+    @classmethod
+    def recolored(cls, icon: QIcon, token: str) -> QIcon:
+        """Same glyph as ``icon`` drawn in palette ``token`` (or the icon
+        unchanged if it wasn't made here)."""
+        tpl = cls._templates.get(icon.cacheKey())
+        if tpl is None:
+            return icon
+        from .themekit import themed_svg_icon
+        return themed_svg_icon(tpl, token)
+
     @classmethod
     def _create_icon(cls, svg_template: str, color: str = None) -> QIcon:
         """Create a QIcon from SVG template."""
-        if color is None:
-            color = cls.COLOR
+        # None or a palette TOKEN ("TEXT", "ON_ACCENT", …) → follows the
+        # live theme; a literal "#rrggbb" pins the color
+        if color is None or (color.isupper() and not color.startswith("#")):
+            from .themekit import themed_svg_icon
+            icon = themed_svg_icon(svg_template, color or cls.COLOR)
+            cls._templates[icon.cacheKey()] = svg_template
+            return icon
 
         svg_data = svg_template.format(color=color)
         svg_bytes = QByteArray(svg_data.encode('utf-8'))

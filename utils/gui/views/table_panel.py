@@ -31,6 +31,13 @@ try:
 except ImportError:
     UNITS_AVAILABLE = False
 
+# Keys that ride inside a raw channel dict as metadata rather than as a
+# channel.  They must never be exported as if they were signals.
+try:
+    from utils.windtunnel.data_io import BALANCE_MARKER_KEYS
+except ImportError:
+    BALANCE_MARKER_KEYS = ()
+
 
 class ExportAborted(Exception):
     """Raised when an export has nothing to write."""
@@ -72,6 +79,8 @@ class TablePanel(QWidget):
                 background-color: {DarkTheme.BACKGROUND_LIGHT};
                 border-bottom: 1px solid {DarkTheme.BORDER};
             }}
+            /* labels are QFrames too — keep them unboxed */
+            QLabel {{ border: none; background: transparent; }}
         """)
         toolbar_layout = QHBoxLayout(toolbar)
         toolbar_layout.setContentsMargins(8, 4, 8, 4)
@@ -143,6 +152,8 @@ class TablePanel(QWidget):
                 background-color: {DarkTheme.BACKGROUND_LIGHTER};
                 border-top: 1px solid {DarkTheme.BORDER};
             }}
+            /* labels are QFrames too — keep them unboxed */
+            QLabel {{ border: none; background: transparent; }}
         """)
         status_layout = QHBoxLayout(self.status_bar)
         status_layout.setContentsMargins(8, 4, 8, 4)
@@ -161,6 +172,48 @@ class TablePanel(QWidget):
 
         # Initialize columns
         self._update_columns()
+
+    @staticmethod
+    def _channel_cal_for(case) -> dict:
+        """The per-channel calibration recorded with this case's runs.
+
+        Freestream records the tunnel channels as RAW VOLTS and attaches
+        the calibration that converts them
+        (``{channel: {slope, offset, unit, type}}``, where ``identity``
+        means the instrument already reports engineering units). It
+        rides in with the channels as a marker, so it is read back off
+        the first reduced point.
+
+        Returned empty for a run that carried none, in which case the
+        reduction used its built-in default slopes and there is nothing
+        channel-specific to record.
+        """
+        daq = getattr(case, 'daq', None)
+        for point in (getattr(daq, 'red', None) or []):
+            cal = (getattr(point, 'air_on', None) or {}).get('channel_cal')
+            if isinstance(cal, dict) and cal:
+                return cal
+        return {}
+
+    def _element_channels(self) -> tuple:
+        """The six element channels of the cases on display.
+
+        Taken from the selected case when there is one, so the columns
+        name the balance that actually recorded them. Cases from
+        different balances cannot share one set of columns, so the first
+        case with data decides and the rest follow; a directory is one
+        balance, so this only bites when two are loaded side by side.
+        """
+        from utils.windtunnel.transforms import element_channels
+        case_id = self.cmb_case.currentData() if hasattr(
+            self, 'cmb_case') else None
+        case = self.model.cases.get(case_id) if case_id else None
+        if case is None:
+            case = next((c for c in self.model.cases if c.has_data), None)
+        if case is not None:
+            return case.element_channels
+        return element_channels(
+            '', getattr(self.model, 'balance_config', 'Force'))
 
     def _get_unit_labels(self):
         """Get unit labels for the current output system."""
@@ -205,20 +258,15 @@ class TablePanel(QWidget):
         ]
 
         # Balance element force columns with dynamic unit labels
-        # Use moment-balance names if balance_config is 'Moment'
-        bal_cfg = getattr(self.model, 'balance_config', 'Force')
-        if bal_cfg == 'Moment':
-            e_names = ['AftPitch', 'AftYaw', 'FwdPitch', 'FwdYaw',
-                       'Axial', 'Roll']
-        else:
-            e_names = ['N1', 'N2', 'Y1', 'Y2', 'Axial', 'Roll']
+        # Name the six element slots for the balance that recorded
+        # them: an external balance reads Fx..Mz, three of which are
+        # MOMENTS, so the unit label varies per slot too.
+        channels = self._element_channels()
+        slots = ("elem_N1", "elem_N2", "elem_Y1", "elem_Y2",
+                 "elem_Ax", "elem_Roll")
         element_columns = [
-            ("elem_N1", f"{e_names[0]} [{labels.force}]"),
-            ("elem_N2", f"{e_names[1]} [{labels.force}]"),
-            ("elem_Y1", f"{e_names[2]} [{labels.force}]"),
-            ("elem_Y2", f"{e_names[3]} [{labels.force}]"),
-            ("elem_Ax", f"{e_names[4]} [{labels.force}]"),
-            ("elem_Roll", f"{e_names[5]} [{labels.force}]"),
+            (slot, f"{name} [{labels.moment if kind == 'moment' else labels.force}]")
+            for slot, (name, kind) in zip(slots, channels)
         ]
 
         # Tunnel condition columns with dynamic unit labels
@@ -904,6 +952,8 @@ class TablePanel(QWidget):
             'ref_area': np.float64(self.model.ref_area),
             'span': np.float64(self.model.span),
             'mrc': np.array(self.model.mrc, dtype=np.float64),
+            'alpha_offset_deg': np.float64(self.model.alpha_offset),
+            'beta_offset_deg': np.float64(self.model.beta_offset),
             'input_units': self.model.units,
             'output_units': self.model.output_units,
         }
@@ -1078,6 +1128,11 @@ class TablePanel(QWidget):
                 per_var.setdefault(name, []).append(m)
             air_on = getattr(pt, 'air_on', None) or {}
             for name, val in air_on.items():
+                # Skip the self-describing balance markers: they share the
+                # channel dict with the real channels but are metadata,
+                # and averaging them yields an all-NaN column.
+                if name in BALANCE_MARKER_KEYS:
+                    continue
                 try:
                     arr = np.asarray(val, dtype=float)
                     m = float(np.mean(arr)) if arr.size > 0 else float('nan')
@@ -1127,11 +1182,25 @@ class TablePanel(QWidget):
         by explicit (i,j,k) placement (missing cells -> NaN), so it is robust
         to irregular/incomplete grids. ``axes`` carries the unique
         alpha/beta/mach vectors plus the pre-squeeze dim order and shape.
+
+        The alpha and beta axes come from ``case.point_alphas`` /
+        ``point_betas``, the COMMANDED angles: the measured attitude lands
+        a few hundredths off, and differently on each speed step, so an
+        axis built from it would carry a separate column per reading with
+        one real value in each.  The Mach axis likewise comes from
+        ``case.point_machs``, which reports each speed STEP at its mean
+        measured Mach.  The raw per-point Mach
+        cannot define an axis: the tunnel does not hold an exact Mach
+        across an alpha sweep, so a 3-speed sweep would yield an 11-wide
+        Mach axis and a grid that is mostly NaN, with one real value per
+        column.
         """
         try:
-            a = np.asarray(case.alphas, dtype=float).flatten()
-            b = np.asarray(case.betas, dtype=float).flatten()
-            m = np.asarray(getattr(case, 'machs', np.array([])),
+            a = np.asarray(getattr(case, 'point_alphas', case.alphas),
+                           dtype=float).flatten()
+            b = np.asarray(getattr(case, 'point_betas', case.betas),
+                           dtype=float).flatten()
+            m = np.asarray(getattr(case, 'point_machs', np.array([])),
                            dtype=float).flatten()
         except Exception:
             return None, None
@@ -1230,6 +1299,26 @@ class TablePanel(QWidget):
                                  else np.asarray(arr))
             out['Raw'] = raw_sub
 
+        # The calibration that turns those raw volts into engineering
+        # units, one entry per calibrated channel, so the exported file
+        # is self-describing: Raw.Pdiff is volts, and
+        # Channel_Cal.Pdiff.slope is what converts it.
+        channel_cal = self._channel_cal_for(case)
+        if channel_cal:
+            cal_sub = {}
+            for name, entry in channel_cal.items():
+                if not isinstance(entry, dict):
+                    continue
+                safe = self._sanitize_matlab_name(str(name))
+                cal_sub[safe] = {
+                    'slope': np.float64(entry.get('slope', 1.0)),
+                    'offset': np.float64(entry.get('offset', 0.0)),
+                    'unit': str(entry.get('unit', '')),
+                    'type': str(entry.get('type', 'linear')),
+                }
+            if cal_sub:
+                out['Channel_Cal'] = cal_sub
+
         # Axis vectors + dim order for the (alpha, beta, mach) grid, so the
         # 3-D arrays above are self-describing in MATLAB.
         if axes3d is not None:
@@ -1318,23 +1407,33 @@ class TablePanel(QWidget):
                     elems = elems_on - np.mean(elems_off, axis=0)
                 else:
                     elems = elems_on
-                bal_cfg = getattr(self.model, 'balance_config', 'Force')
-                if bal_cfg == 'Moment':
-                    elem_names = ['AftPitch', 'AftYaw', 'FwdPitch',
-                                  'FwdYaw', 'Axial', 'Roll']
-                else:
-                    elem_names = ['N1', 'N2', 'Y1', 'Y2', 'Axial', 'Roll']
+                # Which balance recorded this point comes from the
+                # point's own channels, not the session setting: the
+                # run file carries the marker.
+                from utils.windtunnel.transforms import (
+                    element_channel_names, is_external_balance_data)
+                air_on = getattr(pt, 'air_on', None) or {}
+                btype = ('external' if is_external_balance_data(air_on)
+                         else 'internal')
+                model = getattr(self, 'model', None)
+                elem_names = element_channel_names(
+                    btype, getattr(model, 'balance_config', 'Force'))
                 for col_idx, name in enumerate(elem_names):
                     data[f'element_{name}'] = elems[:, col_idx]
 
-        # Raw channels (air-on)
+        # Raw channels (air-on).  The channel dict also carries the
+        # self-describing balance markers (balance_type, speed_value,
+        # channel_cal, ...), which are metadata and not time series:
+        # exporting them would write a string or a nested dict into a
+        # signal column, and len() on the 0-d ones raises outright.
         if hasattr(pt, 'air_on') and pt.air_on is not None:
-            skip = {'Time', 'Alpha', 'Beta'}
+            skip = {'Time', 'Alpha', 'Beta'} | set(BALANCE_MARKER_KEYS)
             for key, val in pt.air_on.items():
-                if key not in skip:
-                    arr = np.asarray(val)
-                    if len(arr) > 0:
-                        data[f'raw_{key}'] = arr
+                if key in skip:
+                    continue
+                arr = np.asarray(val)
+                if arr.ndim >= 1 and arr.size > 0:
+                    data[f'raw_{key}'] = arr
 
         return data
 
@@ -1436,12 +1535,16 @@ class TablePanel(QWidget):
     def _config_wants_unsteady(config: Optional[dict]) -> bool:
         """Whether an ExportDialog config asks for time-series data.
 
-        The dialog exposes the coefficient and tunnel time-series as
-        separate options; either one requires the unsteady sub-group.
-        Defaults to False when no config was supplied.
+        The dialog exposes a single 'Include all unsteady (time-series)
+        data' checkbox.  Older configs used separate
+        include_coefficients_ts / include_tunnel_ts flags; honor those
+        too for backward compatibility.  Defaults to False when no
+        config was supplied.
         """
         if not config:
             return False
+        if 'include_unsteady' in config:
+            return bool(config.get('include_unsteady'))
         return bool(config.get('include_coefficients_ts')
                     or config.get('include_tunnel_ts'))
 
@@ -1708,6 +1811,8 @@ class TablePanel(QWidget):
                 geo_grp.attrs['span'] = self.model.span
                 geo_grp.create_dataset('mrc',
                                        data=np.array(self.model.mrc))
+                geo_grp.attrs['alpha_offset_deg'] = self.model.alpha_offset
+                geo_grp.attrs['beta_offset_deg'] = self.model.beta_offset
                 geo_grp.attrs['input_units'] = self.model.units
                 geo_grp.attrs['output_units'] = self.model.output_units
 
@@ -1744,6 +1849,15 @@ class TablePanel(QWidget):
                     # channel's per-point mean.
                     categorized = self._build_categorized_struct(
                         case)
+                    # Channel_Cal is metadata, not arrays: it goes on
+                    # the Raw datasets as attributes instead, under the
+                    # same four names freestream writes on a run file
+                    # (cal_slope/cal_offset/cal_unit/cal_type). The
+                    # export nests a case group above Raw, so this is
+                    # not a run file and does not read back as one - but
+                    # anything opening it sees each raw channel labelled
+                    # with the calibration that converts it.
+                    channel_cal = categorized.pop('Channel_Cal', None)
                     for cat_key, sub in categorized.items():
                         sub_grp = case_grp.create_group(cat_key)
                         for name, arr in sub.items():
@@ -1752,6 +1866,16 @@ class TablePanel(QWidget):
                                     name, data=np.asarray(arr))
                             except Exception:
                                 pass
+                    if channel_cal and 'Raw' in case_grp:
+                        raw_grp = case_grp['Raw']
+                        for name, entry in channel_cal.items():
+                            if name not in raw_grp:
+                                continue
+                            attrs = raw_grp[name].attrs
+                            attrs['cal_slope'] = float(entry['slope'])
+                            attrs['cal_offset'] = float(entry['offset'])
+                            attrs['cal_unit'] = str(entry['unit'])
+                            attrs['cal_type'] = str(entry['type'])
 
                     # Custom calculator outputs: means and stds
                     custom_means = getattr(

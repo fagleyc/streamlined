@@ -6,7 +6,7 @@ Shared metadata template used across the wind-tunnel software ecosystem
 contact, and a compact version history (newest first).
 """
 
-__version__ = "1.2.8"
+__version__ = "1.4.0"
 APP_NAME = "Streamlined"
 AUTHOR = "C. Fagley"
 CONTACT = "casey.fagley@afacademy.af.edu"
@@ -15,6 +15,62 @@ CONTACT = "casey.fagley@afacademy.af.edu"
 # Dates for 1.2.4+ from the repository history; earlier dates from the
 # archived release zips in Versions/.
 VERSION_HISTORY = [
+    ("1.4.0", "2026-10-02",
+     "Live themes (USAFA Night/Day in official Academy colors, Classic "
+     "Dark/Light, High Contrast) from View ▸ Theme or the status-bar "
+     "chip; Appearance dialog with UI scale + density; Ctrl+K command "
+     "palette; full screen; theme-following icons and plots; USAFA / "
+     "Aeronautics branding on the header, splash, About and window icon"),
+    ("1.3.10", "2026-09-30",
+     "Exports carry the per-channel calibration beside the raw volts: "
+     "a Channel_Cal group in MAT, cal_slope/offset/unit/type attributes "
+     "on the Raw datasets in HDF5"),
+    ("1.3.9", "2026-09-23",
+     "The six element channels are named by the balance that recorded "
+     "them (external Fx..Mz, internal N1.. or AftPitch..) and an "
+     "external run now fills them instead of exporting zeros"),
+    ("1.3.8", "2026-09-22",
+     "A legend you have moved stays put when data is added, instead of "
+     "springing back to the corner; Clear All button on the case list"),
+    ("1.3.7", "2026-09-21",
+     "Mach filter no longer discards a single-speed dataset: the "
+     "whole-case test keyed on the measured mean while the filter "
+     "offers the commanded setpoint"),
+    ("1.3.6", "2026-09-14",
+     "Figure export: legend placement control (four corners), and the "
+     "trace style, legend and grid are remembered between exports "
+     "instead of resetting to defaults every time"),
+    ("1.3.5", "2026-09-14",
+     "Attitude offsets no longer rotate an EXTERNAL balance's loads: the "
+     "balance is mount-fixed, so feeding the offset into its wind-axis "
+     "resolution swung lift into drag and cut L/D by ~2.6x"),
+    ("1.3.4", "2026-09-14",
+     "Fix re-reducing a loaded case (adding an alpha offset after "
+     "loading raised AttributeError), and fix raster figure export "
+     "measuring hidden items and writing a huge mostly-empty image"),
+    ("1.3.3", "2026-09-14",
+     "Mach steps key and label on the COMMANDED Mach like alpha and "
+     "beta do, so runs held a thousandth apart no longer split into "
+     "extra filter entries; legacy M0p25 filename tokens are read as "
+     "a Mach setpoint"),
+    ("1.3.2", "2026-09-12",
+     "Alpha, beta and Mach groups come from the COMMANDED value the "
+     "run recorded, not the measured reading, so positioner jitter no "
+     "longer splits one sweep angle into extra traces, filter entries "
+     "and export columns"),
+    ("1.3.1", "2026-09-09",
+     "Alpha/beta attitude offsets in the model geometry (bent-sting "
+     "rectification): added to every point's recorded attitude, "
+     "air-on and air-off, before reduction"),
+    ("1.3.0", "2026-09-01",
+     "X Axis dropdown on the plot panel: plot against Mach, Re, q, U_inf, "
+     "any coefficient or any calculator variable, replacing the 'Plot vs beta' "
+     "checkbox; a speed variable on x draws one curve per angle"),
+    ("1.2.9", "2026-08-28",
+     "Speed sweeps group by their commanded setpoint, so each Mach "
+     "step plots and exports as one curve; a run folder's processed "
+     "output is no longer indexed as run data; unsteady MAT/HDF5 "
+     "export fixed for external-balance runs"),
     ("1.2.8", "2026-07-23",
      "External (ATE) balance reduction, freestream .h5/.mat run-file "
      "reading, TDMS shift tool, Help/Documentation system + About fix"),

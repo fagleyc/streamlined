@@ -107,15 +107,6 @@ class PlotControlsWidget(QWidget):
         ms_layout.addWidget(self.spn_markersize)
         options_layout.addLayout(ms_layout)
 
-        # X-axis toggle: plot vs beta instead of alpha
-        self.chk_beta_xaxis = QCheckBox("Plot vs \u03b2")
-        self.chk_beta_xaxis.setChecked(False)
-        self.chk_beta_xaxis.setToolTip(
-            "Swap x-axis from \u03b1 to \u03b2 for angle-of-attack plots"
-        )
-        self.chk_beta_xaxis.stateChanged.connect(lambda: self.options_changed.emit())
-        options_layout.addWidget(self.chk_beta_xaxis)
-
         # Auto scale button
         self.btn_auto_scale = QPushButton("Auto Scale")
         self.btn_auto_scale.clicked.connect(self.autoscale_requested.emit)
@@ -134,13 +125,42 @@ class PlotControlsWidget(QWidget):
         """Get the current marker size setting."""
         return self.spn_markersize.value()
 
-    def is_beta_xaxis(self) -> bool:
-        """Check if beta x-axis mode is active."""
-        return self.chk_beta_xaxis.isChecked()
+    def get_x_var(self) -> str:
+        """The user-selected x variable, or "" for the plot-type default.
+
+        Replaces the old "Plot vs beta" checkbox, which is now just the
+        sideslip entry of the X Axis combo.
+        """
+        return self.plot_selector.get_x_var()
 
 
 _BETA_LINESTYLES = ['-', '--', '-.', ':']
 _BETA_MARKERS = ['o', 's', '^', 'D', 'v', '<', '>', 'p', 'h', '*']
+
+# Variables that vary along the SPEED sweep rather than along an alpha or
+# beta sweep.  Putting one of these on the x axis means each alpha/beta
+# point becomes its own trace, walking across the speed steps; otherwise a
+# speed sweep would draw as a zigzag connecting unrelated conditions.
+_X_SPEED_VARS = frozenset({'Mach', 'Re', 'Q', 'U_inf', 'Velocity'})
+
+# Axis labels for the built-in x variables.  Entries with a {} placeholder
+# are dimensional and are filled from the active output unit system, which
+# is also what their data is converted into (see PlotPanel._convert_x).
+_X_AXIS_LABELS = {
+    'Alpha': r"$\alpha$ [deg]",
+    'Beta': r"$\beta$ [deg]",
+    'Mach': "Mach",
+    'Re': "Re",
+    'Q': "q [{}]",
+    'U_inf': r"$U_\infty$ [{}]",
+    'Cl': r"$C_L$",
+    'Cd': r"$C_D$",
+    'Cs': r"$C_Y$",
+    'CRoll': r"$C_l$",
+    'CPitch': r"$C_m$",
+    'CYaw': r"$C_n$",
+    'L/D': r"$L/D$",
+}
 
 
 class PlotPanel(QWidget):
@@ -195,6 +215,8 @@ class PlotPanel(QWidget):
                 background-color: {DarkTheme.BACKGROUND_LIGHT};
                 border-left: 1px solid {DarkTheme.BORDER};
             }}
+            /* labels are QFrames too — keep them unboxed */
+            QLabel {{ border: none; background: transparent; }}
         """)
 
         self.plot_controls = PlotControlsWidget()
@@ -270,13 +292,12 @@ class PlotPanel(QWidget):
         # selects which step(s) to visualize (None = all).
         sel_mach = self.filter_toolbar.get_selected_mach()
 
-        # Get axis variables based on plot type
+        # Get axis variables based on plot type, then apply the X Axis
+        # override when the user picked one.
         x_var, y_var = self._get_axis_vars(config.plot_type)
-
-        # Override x-axis to beta if toggle is active
-        beta_xaxis = self.plot_controls.is_beta_xaxis() and x_var == "Alpha"
-        if beta_xaxis:
-            x_var = "Beta"
+        x_override = self.plot_controls.get_x_var()
+        if x_override:
+            x_var = x_override
 
         # Plot each visible case
         for case in visible_cases:
@@ -287,9 +308,8 @@ class PlotPanel(QWidget):
                             sel_mach)
 
         # Set labels
-        xlabel = r"$\beta$ [deg]" if beta_xaxis else config.x_label
         self.plot_canvas.set_labels(
-            xlabel=xlabel,
+            xlabel=self._x_axis_label(x_var, config),
             ylabel=config.y_label
         )
 
@@ -338,6 +358,52 @@ class PlotPanel(QWidget):
             y_var = custom_y
         return x_var, y_var
 
+    def _unit_labels(self):
+        """Unit labels for the model's output unit system, or None."""
+        try:
+            from utils.windtunnel.units import UNIT_LABELS, UnitSystem
+            return UNIT_LABELS[UnitSystem[self.model.output_units]]
+        except Exception:                                      # noqa: BLE001
+            return None
+
+    def _x_axis_label(self, x_var: str, config) -> str:
+        """Axis label for the x variable actually being plotted.
+
+        Falls back to the plot type's own label when the x variable came
+        from the plot type, and to the bare variable name for a custom
+        calculator output (whose units only the user knows).
+        """
+        if not self.plot_controls.get_x_var():
+            return config.x_label
+        label = _X_AXIS_LABELS.get(x_var)
+        if label is None:
+            return x_var
+        if "{}" not in label:
+            return label
+        labels = self._unit_labels()
+        if x_var == 'Q':
+            return label.format(labels.pressure if labels else 'psi')
+        return label.format(labels.velocity if labels else 'ft/s')
+
+    def _convert_x(self, data: np.ndarray, x_var: str) -> np.ndarray:
+        """Convert dimensional x data into the output unit system.
+
+        Coefficients, angles, Mach and Reynolds number are dimensionless
+        or already in degrees and pass through untouched.  q and U_inf are
+        stored internally in psi and m/s, so they are converted the same
+        way the table converts them, keeping the two views consistent.
+        """
+        if x_var not in ('Q', 'U_inf', 'Velocity'):
+            return data
+        try:
+            from utils.windtunnel.units import UnitConverter, UnitSystem
+            conv = UnitConverter(UnitSystem[self.model.output_units])
+        except Exception:                                      # noqa: BLE001
+            return data
+        if x_var == 'Q':
+            return conv.convert_pressure(data)
+        return conv.convert_velocity(data)
+
     def _get_linewidth(self) -> float:
         """Get the current line width setting."""
         return self.plot_controls.get_linewidth()
@@ -379,17 +445,51 @@ class PlotPanel(QWidget):
 
     @staticmethod
     def _mach_point_mask(case: TestCase, sel_mach: Optional[float]):
-        """Flat boolean mask selecting points whose PER-POINT Mach matches
-        ``sel_mach``, or None when no Mach filtering applies (no selection,
-        no per-point machs, or a length that would misalign with alpha/beta).
+        """Flat boolean mask selecting points in the speed STEP whose Mach
+        matches ``sel_mach``, or None when no Mach filtering applies (no
+        selection, no per-point machs, or a length that would misalign with
+        alpha/beta).
+
+        Matching is on ``case.point_machs`` (each step reported at its mean
+        measured Mach), not the raw per-point Mach, so selecting a step
+        keeps every point of that step: the measured Mach wanders within a
+        step and would drop most of them.
         """
         if sel_mach is None:
             return None
-        machs = np.asarray(getattr(case, 'machs', np.array([]))).flatten()
+        machs = np.asarray(
+            getattr(case, 'point_machs', np.array([]))).flatten()
         n_pts = int(np.asarray(case.alphas).size)
         if machs.size == 0 or machs.size != n_pts:
             return None
         return np.isclose(machs, sel_mach, atol=5e-4)
+
+    @staticmethod
+    def _case_holds_mach(case: TestCase, sel_mach: float) -> bool:
+        """Does this case hold any point at the selected speed step?
+
+        A case swept at one speed reshapes to a 2-D (alpha x beta) grid,
+        and the 2-D path cannot mask individual points, so it keeps or
+        drops the case whole.  That decision keys on point_machs - the
+        SAME value the Mach filter offers - because a run commanded at
+        M0.3 that held 0.2986 would otherwise miss its own filter entry
+        by more than the tolerance and vanish from the plot.
+
+        A case with no per-point record at all is KEPT: it cannot be
+        keyed either way, and hiding data on a guess is worse than
+        showing it.
+        """
+        keys = np.asarray(getattr(case, 'point_machs', np.array([])),
+                          dtype=float).ravel()
+        if keys.size:
+            return bool(np.any(np.isclose(keys, sel_mach, atol=5e-4)))
+
+        case_mach = (case.mach_number if case.mach_number is not None
+                     else (float(np.mean(case.machs))
+                           if len(case.machs) > 0 else None))
+        if case_mach is None:
+            return True
+        return bool(np.isclose(case_mach, sel_mach, atol=5e-4))
 
     def _plot_case(self, case: TestCase, x_var: str, y_var: str,
                    sel_alphas: Optional[List[float]],
@@ -400,19 +500,28 @@ class PlotPanel(QWidget):
         step to visualize when a config holds several (None = all steps)."""
         lw = self._get_linewidth()
         ms = self._get_markersize()
+        # Grouping keys: the COMMANDED alpha and beta.  case.alphas/betas
+        # hold the MEASURED attitude, which lands a few hundredths off the
+        # commanded angle and differently on every speed step, so grouping
+        # on it splits one sweep angle into several traces.  The measured
+        # arrays stay the plotted/reported values (see TestCase.point_alphas).
+        key_alpha = np.asarray(case.point_alphas, dtype=float)
+        key_beta = np.asarray(case.point_betas, dtype=float)
         beta_xaxis = (x_var == "Beta")
+        # A speed variable on x sweeps the tunnel condition, not an angle,
+        # so the trace grouping inverts: one trace per (alpha, beta) across
+        # the speed steps.  Only 1-D data can hold several speed steps - a
+        # 2-D (alpha x beta) grid exists only when the run held one speed -
+        # so a 2-D case keeps the ordinary column path.
+        speed_xaxis = (x_var in _X_SPEED_VARS and case.alphas.ndim != 2)
 
         # Per-point Mach mask (flat, aligned with flat alpha/beta) for the
         # 1-D multi-speed path; and a whole-case skip for a single-Mach 2-D
         # grid whose Mach doesn't match the selection.
         mach_mask_flat = self._mach_point_mask(case, sel_mach)
-        if sel_mach is not None and case.alphas.ndim == 2:
-            case_mach = (case.mach_number if case.mach_number is not None
-                         else (float(np.mean(case.machs))
-                               if len(case.machs) > 0 else None))
-            if case_mach is not None and not np.isclose(
-                    case_mach, sel_mach, atol=5e-4):
-                return
+        if (sel_mach is not None and case.alphas.ndim == 2
+                and not self._case_holds_mach(case, sel_mach)):
+            return
 
         if case.alphas.ndim == 2:
             # --- 2D grid data (rows = alpha, cols = beta) ---
@@ -420,7 +529,7 @@ class PlotPanel(QWidget):
 
             if beta_xaxis:
                 # --- 2D grid, beta on x-axis: one trace per alpha row ---
-                beta_avg = np.mean(case.betas, axis=0)
+                beta_avg = np.mean(key_beta, axis=0)
                 if sel_betas is not None:
                     beta_cols = [j for j in range(n_cols)
                                  if any(np.isclose(beta_avg[j], b, atol=0.15)
@@ -428,7 +537,7 @@ class PlotPanel(QWidget):
                 else:
                     beta_cols = list(range(n_cols))
 
-                alpha_avg = np.mean(case.alphas, axis=1)
+                alpha_avg = np.mean(key_alpha, axis=1)
                 if sel_alphas is not None:
                     alpha_rows = [i for i in range(n_rows)
                                   if any(np.isclose(alpha_avg[i], a, atol=0.15)
@@ -443,13 +552,14 @@ class PlotPanel(QWidget):
 
                 single_alpha = len(alpha_rows) == 1
                 for idx, i in enumerate(alpha_rows):
-                    x_data = self._get_row_data(case, x_var, i)[beta_cols]
+                    x_data = self._convert_x(
+                        self._get_row_data(case, x_var, i)[beta_cols], x_var)
                     y_data = self._get_row_data(case, y_var, i)[beta_cols]
 
                     if len(x_data) == 0 or len(y_data) == 0:
                         continue
 
-                    alpha_val = np.mean(case.alphas[i, :])
+                    alpha_val = np.mean(key_alpha[i, :])
                     if single_alpha:
                         label = case.name
                     else:
@@ -478,14 +588,14 @@ class PlotPanel(QWidget):
 
             # Determine which columns (betas) to plot
             if sel_betas is not None:
-                beta_avg = np.mean(case.betas, axis=0)
+                beta_avg = np.mean(key_beta, axis=0)
                 beta_cols = [j for j in range(n_cols)
                              if any(np.isclose(beta_avg[j], b, atol=0.15) for b in sel_betas)]
             else:
                 beta_cols = list(range(n_cols))
 
             # Determine which rows (alphas) to include
-            alpha_avg = np.mean(case.alphas, axis=1)
+            alpha_avg = np.mean(key_alpha, axis=1)
             if sel_alphas is not None:
                 alpha_rows = [i for i in range(n_rows)
                               if any(np.isclose(alpha_avg[i], a, atol=0.15) for a in sel_alphas)]
@@ -500,13 +610,14 @@ class PlotPanel(QWidget):
 
             single_beta = len(beta_cols) == 1
             for idx, j in enumerate(beta_cols):
-                x_data = self._get_col_data(case, x_var, j)[alpha_rows]
+                x_data = self._convert_x(
+                    self._get_col_data(case, x_var, j)[alpha_rows], x_var)
                 y_data = self._get_col_data(case, y_var, j)[alpha_rows]
 
                 if len(x_data) == 0 or len(y_data) == 0:
                     continue
 
-                beta_val = np.mean(case.betas[:, j])
+                beta_val = np.mean(key_beta[:, j])
                 if single_beta:
                     label = case.name
                 else:
@@ -534,17 +645,27 @@ class PlotPanel(QWidget):
             # --- 1D flat data ---
             flat_alpha = case.alphas.flatten()
             flat_beta = case.betas.flatten()
+            grp_alpha = key_alpha.flatten()
+            grp_beta = key_beta.flatten()
+
+            if speed_xaxis:
+                # --- 1D, a speed variable on x: one trace per (alpha,
+                # beta), walking across the speed steps ---
+                self._plot_speed_sweep(
+                    case, x_var, y_var, sel_alphas, sel_betas,
+                    mach_mask_flat, lw, ms)
+                return
 
             if beta_xaxis:
                 # --- 1D, beta on x-axis: one trace per unique alpha ---
-                beta_mask = np.ones(len(flat_beta), dtype=bool)
+                beta_mask = np.ones(len(grp_beta), dtype=bool)
                 if sel_betas is not None:
-                    beta_mask = np.zeros(len(flat_beta), dtype=bool)
+                    beta_mask = np.zeros(len(grp_beta), dtype=bool)
                     for b in sel_betas:
-                        beta_mask |= np.isclose(flat_beta, b, atol=0.15)
+                        beta_mask |= np.isclose(grp_beta, b, atol=0.15)
 
                 unique_alphas = sorted(
-                    set(round(float(a), 1) for a in flat_alpha))
+                    set(round(float(a), 1) for a in grp_alpha))
 
                 if sel_alphas is not None:
                     unique_alphas = [
@@ -558,7 +679,7 @@ class PlotPanel(QWidget):
                 single_alpha = len(unique_alphas) == 1
 
                 for idx, alpha_val in enumerate(unique_alphas):
-                    alpha_match = np.isclose(flat_alpha, alpha_val, atol=0.15)
+                    alpha_match = np.isclose(grp_alpha, alpha_val, atol=0.15)
                     mask = alpha_match & beta_mask
                     if mach_mask_flat is not None:
                         mask = mask & mach_mask_flat
@@ -566,9 +687,10 @@ class PlotPanel(QWidget):
                     if not np.any(mask):
                         continue
 
-                    sort_order = np.argsort(flat_beta[mask])
-                    x_data = self._get_var_data_1d(
-                        case, x_var, mask)[sort_order]
+                    sort_order = np.argsort(grp_beta[mask])
+                    x_data = self._convert_x(
+                        self._get_var_data_1d(case, x_var, mask), x_var
+                    )[sort_order]
                     y_data = self._get_var_data_1d(
                         case, y_var, mask)[sort_order]
 
@@ -603,14 +725,14 @@ class PlotPanel(QWidget):
                 return
 
             # Build alpha mask (applies to all beta groups)
-            alpha_mask = np.ones(len(flat_alpha), dtype=bool)
+            alpha_mask = np.ones(len(grp_alpha), dtype=bool)
             if sel_alphas is not None:
-                alpha_mask = np.zeros(len(flat_alpha), dtype=bool)
+                alpha_mask = np.zeros(len(grp_alpha), dtype=bool)
                 for a in sel_alphas:
-                    alpha_mask |= np.isclose(flat_alpha, a, atol=0.15)
+                    alpha_mask |= np.isclose(grp_alpha, a, atol=0.15)
 
             # Determine unique betas to iterate over
-            unique_betas = sorted(set(round(float(b), 1) for b in flat_beta))
+            unique_betas = sorted(set(round(float(b), 1) for b in grp_beta))
 
             if sel_betas is not None:
                 unique_betas = [b for b in unique_betas
@@ -621,14 +743,20 @@ class PlotPanel(QWidget):
 
             single_beta = len(unique_betas) == 1
 
-            # Group by tunnel-speed step (Mach) so each speed is a SEPARATE
+            # Group by tunnel-speed step so each speed is a SEPARATE
             # alpha-sweep trace (never a zigzag connecting points across
             # speeds). A specific Mach selection -> one group; "All" over a
-            # multi-speed config -> one group per distinct Mach; single-speed
-            # -> one ungrouped pass.
+            # multi-speed config -> one group per distinct step;
+            # single-speed -> one ungrouped pass.
+            #
+            # The key is case.point_machs, which reports every point of a
+            # step at that step's MEAN measured Mach.  Keying on the raw
+            # per-point Mach instead would split a step into one trace per
+            # point, because the tunnel does not hold an exact Mach across
+            # an alpha sweep.
             machs_flat = np.asarray(
-                getattr(case, 'machs', np.array([]))).flatten()
-            have_mach = (machs_flat.size == len(flat_alpha)
+                getattr(case, 'point_machs', np.array([]))).flatten()
+            have_mach = (machs_flat.size == len(grp_alpha)
                          and machs_flat.size > 0)
             if mach_mask_flat is not None:
                 mach_groups = [(sel_mach, mach_mask_flat)]
@@ -644,7 +772,7 @@ class PlotPanel(QWidget):
             trace_idx = 0
             for mach_val, mmask in mach_groups:
                 for beta_val in unique_betas:
-                    beta_mask = np.isclose(flat_beta, beta_val, atol=0.15)
+                    beta_mask = np.isclose(grp_beta, beta_val, atol=0.15)
                     mask = alpha_mask & beta_mask
                     if mmask is not None:
                         mask = mask & mmask
@@ -653,9 +781,11 @@ class PlotPanel(QWidget):
                         continue
 
                     # Sort by alpha within each (speed, beta) group
-                    sort_order = np.argsort(flat_alpha[mask])
+                    sort_order = np.argsort(grp_alpha[mask])
 
-                    x_data = self._get_var_data_1d(case, x_var, mask)[sort_order]
+                    x_data = self._convert_x(
+                        self._get_var_data_1d(case, x_var, mask),
+                        x_var)[sort_order]
                     y_data = self._get_var_data_1d(case, y_var, mask)[sort_order]
 
                     if len(x_data) == 0 or len(y_data) == 0:
@@ -687,6 +817,111 @@ class PlotPanel(QWidget):
                                     x_data, y_data - y_std,
                                     y_data + y_std, color=case.color)
                     trace_idx += 1
+
+    def _plot_speed_sweep(self, case: TestCase, x_var: str, y_var: str,
+                          sel_alphas: Optional[List[float]],
+                          sel_betas: Optional[List[float]],
+                          mach_mask_flat: Optional[np.ndarray],
+                          lw: float, ms: float):
+        """Draw one trace per (alpha, beta) across the tunnel-speed steps.
+
+        This is the inverse of the ordinary grouping.  With alpha on x, a
+        speed sweep draws one alpha sweep per speed step; with a speed
+        variable on x it draws one speed sweep per angle, which is what
+        makes a Mach sweep read as a curve instead of a column of points.
+
+        Points are ordered by the x variable itself rather than by the
+        speed setpoint, so the line never doubles back on a run where the
+        tunnel did not settle monotonically.
+
+        The (alpha, beta) a trace belongs to is the COMMANDED pair: the
+        measured attitude differs slightly at each speed step, so pairing
+        on it would give one single-point trace per step instead of one
+        curve per angle - the very failure this path exists to avoid.
+        """
+        flat_alpha = np.asarray(case.alphas, dtype=float).flatten()
+        flat_beta = np.asarray(case.betas, dtype=float).flatten()
+        grp_alpha = np.asarray(case.point_alphas, dtype=float).flatten()
+        grp_beta = np.asarray(case.point_betas, dtype=float).flatten()
+
+        pairs = []
+        for a, b in zip(grp_alpha, grp_beta):
+            key = (round(float(a), 1), round(float(b), 1))
+            if key not in pairs:
+                pairs.append(key)
+        if sel_alphas is not None:
+            pairs = [p for p in pairs
+                     if any(np.isclose(p[0], sa, atol=0.15)
+                            for sa in sel_alphas)]
+        if sel_betas is not None:
+            pairs = [p for p in pairs
+                     if any(np.isclose(p[1], sb, atol=0.15)
+                            for sb in sel_betas)]
+        if not pairs:
+            return
+        pairs.sort()
+
+        single_alpha = len({p[0] for p in pairs}) == 1
+        single_beta = len({p[1] for p in pairs}) == 1
+
+        for idx, (alpha_val, beta_val) in enumerate(pairs):
+            mask = (np.isclose(grp_alpha, alpha_val, atol=0.15)
+                    & np.isclose(grp_beta, beta_val, atol=0.15))
+            if mach_mask_flat is not None:
+                mask = mask & mach_mask_flat
+            if not np.any(mask):
+                continue
+
+            x_data = self._convert_x(
+                self._get_var_data_1d(case, x_var, mask), x_var)
+            y_data = self._get_var_data_1d(case, y_var, mask)
+            if len(x_data) == 0 or len(y_data) == 0:
+                continue
+
+            sort_order = np.argsort(x_data)
+            x_data = x_data[sort_order]
+            y_data = y_data[sort_order]
+
+            parts = [case.name]
+            if not single_alpha:
+                parts.append(f"\u03b1={alpha_val:.1f}\u00b0")
+            if not single_beta:
+                parts.append(f"\u03b2={beta_val:.1f}\u00b0")
+            label = " ".join(parts)
+
+            ls = _BETA_LINESTYLES[idx % len(_BETA_LINESTYLES)]
+            mk = _BETA_MARKERS[idx % len(_BETA_MARKERS)]
+            self.plot_canvas.plot(
+                x_data, y_data, label=label, color=case.color, marker=mk,
+                linestyle=ls, linewidth=lw, markersize=ms, case_id=case.id,
+                alpha_arr=flat_alpha[mask][sort_order],
+                beta_arr=flat_beta[mask][sort_order])
+            if self.model.plot_config.show_std_dev:
+                std_var = self._get_std_var(y_var)
+                if std_var:
+                    y_std = self._get_var_data_1d(
+                        case, std_var, mask)[sort_order]
+                    if len(y_std) == len(y_data):
+                        self.plot_canvas.fill_between(
+                            x_data, y_data - y_std, y_data + y_std,
+                            color=case.color)
+
+    @staticmethod
+    def _conform(case: TestCase, data: np.ndarray) -> np.ndarray:
+        """Reshape a flat per-point array onto the case's alpha grid.
+
+        The per-point tunnel conditions (Mach, Re, q, U_inf) are stored
+        flat, one entry per reduced point, while alphas/betas may be a 2-D
+        (alpha x beta) grid.  Indexing a flat array by row or column would
+        silently take the wrong points, so conform it first.  Anything that
+        does not match the grid size is returned untouched.
+        """
+        data = np.asarray(data)
+        alphas = np.asarray(case.alphas)
+        if (alphas.ndim == 2 and data.ndim == 1
+                and data.size == alphas.size):
+            return data.reshape(alphas.shape)
+        return data
 
     def _resolve_derivative(self, case: TestCase, var: str) -> Optional[np.ndarray]:
         """Return the full derivative array for `var`, or None if not a derivative."""
@@ -772,7 +1007,7 @@ class PlotPanel(QWidget):
                 return deriv[:, col]
             return deriv
 
-        data = case.get_coefficient(var)
+        data = self._conform(case, case.get_coefficient(var))
         if data.ndim == 2:
             return data[:, col]
         return data
@@ -796,7 +1031,7 @@ class PlotPanel(QWidget):
                 return deriv[row, :]
             return deriv
 
-        data = case.get_coefficient(var)
+        data = self._conform(case, case.get_coefficient(var))
         if data.ndim == 2:
             return data[row, :]
         return data

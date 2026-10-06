@@ -26,6 +26,7 @@ from .dialogs import (
 )
 from ..widgets.export_dialog import ExportDialog
 from ..utils.themes import DarkTheme
+from ..utils import themekit
 from ..utils.icons import Icons
 from .. import __app_name__, __version__
 
@@ -56,6 +57,8 @@ class MainWindow(QMainWindow):
     def _setup_window(self):
         """Configure the main window."""
         self.setWindowTitle(f"{__app_name__} v{__version__}")
+        self.setWindowIcon(themekit.app_icon())
+        themekit.manager().ensure_applied()
         self.setMinimumSize(1000, 700)
 
         # Restore window geometry
@@ -228,6 +231,9 @@ class MainWindow(QMainWindow):
         self.action_refresh.setShortcut(QKeySequence.StandardKey.Refresh)
         view_menu.addAction(self.action_refresh)
 
+        # Theme ▸, Appearance…, zoom, full screen, command palette (Ctrl+K)
+        themekit.install_view_menu(self, view_menu)
+
         # Help menu
         help_menu = menubar.addMenu("&Help")
 
@@ -248,16 +254,39 @@ class MainWindow(QMainWindow):
     def _setup_toolbar(self):
         """Set up the main toolbar."""
         toolbar = QToolBar("Main Toolbar")
+        toolbar.setObjectName("mainToolbar")          # brand header styling
         toolbar.setIconSize(QSize(20, 20))
         toolbar.setMovable(False)
         self.addToolBar(toolbar)
 
+        self.brand = themekit.BrandBadge(__app_name__,
+                                         "USAFA · Aeronautics Lab", height=34)
+        toolbar.addWidget(self.brand)
+        toolbar.addSeparator()
         toolbar.addAction(self.action_load_data)
         toolbar.addSeparator()
         toolbar.addAction(self.action_geometry)
         toolbar.addAction(self.action_calibration)
         toolbar.addSeparator()
         toolbar.addAction(self.action_refresh)
+
+        # the toolbar sits on the brand header: its buttons draw the same
+        # glyphs in header ink (menus keep the normal text-colored icons)
+        # (re-applied after every action change, which resets the icon)
+        from PyQt6.QtCore import QTimer
+        for act in toolbar.actions():
+            btn = toolbar.widgetForAction(act)
+            if btn is None or act.icon().isNull():
+                continue
+            header_icon = Icons.recolored(act.icon(), "HEADER_TEXT")
+
+            def _reapply(b=btn, ic=header_icon):
+                try:
+                    b.setIcon(ic)
+                except RuntimeError:                   # button deleted
+                    pass
+            _reapply()
+            act.changed.connect(lambda r=_reapply: QTimer.singleShot(0, r))
 
     def _setup_statusbar(self):
         """Set up the status bar."""
@@ -276,8 +305,13 @@ class MainWindow(QMainWindow):
 
         # Case count
         self.case_count_label = QLabel("0 cases")
-        self.case_count_label.setStyleSheet(f"color: {DarkTheme.TEXT_SECONDARY};")
         self.statusbar.addPermanentWidget(self.case_count_label)
+
+        hint = QLabel("Ctrl+K  command palette")
+        hint.setObjectName("hint")
+        self.statusbar.addPermanentWidget(hint)
+        self.theme_toggle = themekit.ThemeToggleButton()
+        self.statusbar.addPermanentWidget(self.theme_toggle)
 
     def _connect_signals(self):
         """Connect signals to slots."""
@@ -426,7 +460,8 @@ class MainWindow(QMainWindow):
 
             # Determine which geometry names changed (so we can re-reduce
             # cases that use them).  A geometry "changed" if any reference
-            # value (mac, ref_area, span, mrc, units) differs.
+            # value (mac, ref_area, span, mrc, units, alpha/beta offset)
+            # differs.
             changed_names = set()
             for name, new_def in new_geos.items():
                 old_def = old_geos.get(name)
@@ -836,5 +871,6 @@ class MainWindow(QMainWindow):
 
     def set_status(self, message: str):
         """Set status bar message."""
+        # one place only: a temporary showMessage() on top of the label
+        # drew the same text twice, overlapped
         self.status_label.setText(message)
-        self.statusbar.showMessage(message, 5000)

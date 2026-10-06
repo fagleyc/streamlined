@@ -94,6 +94,26 @@ class PlotCanvas(QWidget):
         self._setup_ui()
         self._apply_style()
         self._connect_signals()
+        from ..utils import themekit
+        themekit.manager().changed.connect(self._on_theme_changed)
+
+    def _on_theme_changed(self, *_):
+        """Live theme switch: new rc defaults + restyle what is drawn."""
+        try:
+            from matplotlib import rcParams
+            rcParams.update(get_plot_style())
+            self.figure.patch.set_facecolor(DarkTheme.PLOT_BACKGROUND)
+            self._apply_style()
+            legend = self.ax.get_legend()
+            if legend is not None:
+                style = get_plot_style()
+                legend.get_frame().set_facecolor(style['legend.facecolor'])
+                legend.get_frame().set_edgecolor(style['legend.edgecolor'])
+                for text in legend.get_texts():
+                    text.set_color(style['text.color'])
+            self.canvas.draw_idle()
+        except RuntimeError:                           # widget deleted
+            pass
 
     def _setup_ui(self):
         """Set up the UI components."""

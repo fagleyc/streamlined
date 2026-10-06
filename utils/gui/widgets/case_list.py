@@ -191,6 +191,7 @@ class CaseListWidget(QWidget):
     case_color_changed = pyqtSignal(str, str)
     case_deleted = pyqtSignal(str)
     add_requested = pyqtSignal()
+    clear_all_requested = pyqtSignal()
     geometry_assigned = pyqtSignal(str, str)  # (case_id, geometry_name)
     calibration_assigned = pyqtSignal(str, str)  # (case_id, calibration_name)
 
@@ -214,6 +215,8 @@ class CaseListWidget(QWidget):
                 border: none;
                 border-bottom: 1px solid {DarkTheme.BORDER};
             }}
+            /* labels are QFrames too — keep them unboxed */
+            QLabel {{ border: none; background: transparent; }}
         """)
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(12, 8, 12, 8)
@@ -277,6 +280,8 @@ class CaseListWidget(QWidget):
                 border: none;
                 border-top: 1px solid {DarkTheme.BORDER};
             }}
+            /* labels are QFrames too — keep them unboxed */
+            QLabel {{ border: none; background: transparent; }}
         """)
         footer_layout = QHBoxLayout(footer)
         footer_layout.setContentsMargins(8, 4, 8, 4)
@@ -290,6 +295,12 @@ class CaseListWidget(QWidget):
         self.btn_hide_all.setToolTip("Hide all cases")
         self.btn_hide_all.clicked.connect(self._hide_all)
         footer_layout.addWidget(self.btn_hide_all)
+
+        self.btn_clear_all = QPushButton("Clear All")
+        self.btn_clear_all.setToolTip(
+            "Remove every loaded case (the data files are not touched)")
+        self.btn_clear_all.clicked.connect(self.clear_all_requested.emit)
+        footer_layout.addWidget(self.btn_clear_all)
 
         footer_layout.addStretch()
 
