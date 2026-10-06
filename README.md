@@ -28,16 +28,17 @@ Streamlined is a Python-based wind tunnel data reduction system that replaces le
 4. [Stage 3: Apply Calibration to Raw Voltages](#stage-3-apply-calibration-to-raw-voltages)
 5. [Stage 4: Body Reference Frame (BRF) Forces](#stage-4-body-reference-frame-brf-forces)
 6. [Stage 5: Wind Reference Frame (WRF) Transformation](#stage-5-wind-reference-frame-wrf-transformation)
-7. [Stage 6: Tare Subtraction (Air-Off Removal)](#stage-6-tare-subtraction-air-off-removal)
-8. [Stage 7: Tunnel Conditions](#stage-7-tunnel-conditions)
-9. [Stage 8: Aerodynamic Coefficients](#stage-8-aerodynamic-coefficients)
-10. [Stage 9: Steady-State Reduction](#stage-9-steady-state-reduction)
-11. [Pressure Transducer Calibration](#pressure-transducer-calibration)
-12. [Model Geometry](#model-geometry)
-13. [Derived Aerodynamic Parameters](#derived-aerodynamic-parameters)
-14. [Graphical User Interface](#graphical-user-interface)
-15. [Export Capabilities](#export-capabilities)
-16. [Technical Specifications](#technical-specifications)
+7. [External Balance (ATE) Reduction](#external-balance-ate-reduction)
+8. [Stage 6: Tare Subtraction (Air-Off Removal)](#stage-6-tare-subtraction-air-off-removal)
+9. [Stage 7: Tunnel Conditions](#stage-7-tunnel-conditions)
+10. [Stage 8: Aerodynamic Coefficients](#stage-8-aerodynamic-coefficients)
+11. [Stage 9: Steady-State Reduction](#stage-9-steady-state-reduction)
+12. [Pressure Transducer Calibration](#pressure-transducer-calibration)
+13. [Model Geometry](#model-geometry)
+14. [Derived Aerodynamic Parameters](#derived-aerodynamic-parameters)
+15. [Graphical User Interface](#graphical-user-interface)
+16. [Export Capabilities](#export-capabilities)
+17. [Technical Specifications](#technical-specifications)
 
 ---
 
@@ -90,6 +91,8 @@ TDMS Files (raw voltages)
 [Stage 9] Steady-state: mean(CL(t)) --> single CL value  |
           std(CL(t)) --> CL_std (flow unsteadiness)       |
 ```
+
+**Two balance paths.** The diagram above is the **internal (sting) balance**, which streams bridge volts and needs Stages 2-5 to turn them into wind-axis loads. An **external (ATE) balance** streams loads that are already resolved, so it skips Stages 2, 3 and 4 entirely and replaces Stage 5 with a mount-dependent resolution. Both paths rejoin at Stage 6 and everything downstream is identical. See [External Balance (ATE) Reduction](#external-balance-ate-reduction).
 
 **Critical design point:** Tare subtraction happens in the **Wind Reference Frame**, not the Body Reference Frame. Air-on and air-off data are each transformed through BRF and WRF using **their own** alpha/beta angles before subtraction. This ensures correct weight tare removal when the model is at any attitude.
 
@@ -341,6 +344,149 @@ Yaw   = Mz
 **Important:** This transformation is applied **separately** to air-on and air-off data using **their own** alpha/beta angles. Air-off data may be at a different angle than air-on (e.g., single-tare approach at alpha=0).
 
 **Output:** `WRFForces` containing `Lift, Drag, Side, Roll, Pitch, Yaw` — all time-series vectors.
+
+---
+
+## External Balance (ATE) Reduction
+
+**Source:** `external_balance.py`, dispatched from `reduction.py` -> `reduce_single_point()`
+
+An external balance sits under the tunnel and streams six **already-resolved** load channels. There are no bridge volts to calibrate, so Stages 2-4 do not apply and no `.vol` file is required. This path replaces Stage 5 only; Stages 6-9 are shared with the internal balance.
+
+### Detection
+
+**Source:** `transforms.py` -> `is_external_balance_data()`
+
+An explicit `balance_type` marker decides it: Freestream stamps `'external'` or `'internal'` into every run file, and the directory manifest repeats it. With no marker, structural detection applies — resolved load channels present (`Fz, Fx, My`, or the legacy `Lift, Drag, Pitch`) and **no** bridge channels — so a legacy file still classifies correctly.
+
+### Channel Order
+
+The balance frame is **X back, Y right, Z up**:
+
+| Column | Balance channel | Legacy name |
+|--------|-----------------|-------------|
+| 1 | Fx | Drag |
+| 2 | Fy | Side |
+| 3 | Fz | Lift |
+| 4 | Mx | Roll |
+| 5 | My | Pitch |
+| 6 | Mz | Yaw |
+
+Both naming eras are read; the legacy wind words are accepted as aliases for the balance-frame names.
+
+### Step 1: Unit Conversion
+
+**Source:** `external_loads_to_ips()`
+
+The chain works in **lb** and **in-lb**. The OGI's unit setting is operator-selectable and is not carried on the wire, so the conversion is driven entirely by the recorded `load_units` marker:
+
+| Marker | Force scale | Moment scale |
+|--------|-------------|--------------|
+| `lb` | 1.0 | 1.0 |
+| `lbft` | 1.0 | **12.0** |
+| `n` | 0.224809 | 8.850746 |
+| `kg` | 2.204623 | 86.796166 |
+
+An absent or unrecognised marker passes through untouched. Note that the OGI's pound setting pairs lbf with lbf·**ft**, not in·lbf — a factor of 12 on every moment coefficient.
+
+### Step 2: Mount-Dependent Resolution
+
+**Source:** `resolve_external_wrf()`
+
+How the channels become wind-axis loads depends on how the model is mounted. The marker is `span_config` (`'full'` / `'half'`; the MATLAB names `Horizontal` / `Vertical` and the `semispan` aliases are accepted). **An unrecognised or missing marker falls back to `'full'`**, the historical pass-through behaviour.
+
+**Full span** — alpha comes from the incidence strut *above* the balance, so the balance stays level and its channels already **are** the wind-axis loads:
+
+```
+Lift = Fz      Roll  = Mx
+Drag = Fx      Pitch = My
+Side = Fy      Yaw   = Mz
+```
+
+**Half span** — the semispan model stands on the turntable and alpha **is** the yaw drive, so the balance rotates with the model. The horizontal channels are body-fixed and need the alpha rotation, and the vertical channel reads the model's **side** force, not lift:
+
+```
+Lift  = Fy·cos(alpha) - Fx·sin(alpha)
+Drag  = Fx·cos(alpha) + Fy·sin(alpha)
+Side  = Fz
+Roll  = Mx
+Pitch = Mz
+Yaw   = My
+```
+
+Reducing a half-span run with the full-span algorithm is what makes drag come out backwards: the missing `+Side·sin(alpha)` term is the whole induced-drag contribution, and "lift" is really the span-direction channel.
+
+> **Which alpha?** This rotation uses the **recorded** attitude, not the attitude offset applied one. The balance is bolted to the mount, so the angle between its axes and the flow is what the positioner recorded; an attitude offset moves the model *on* the mount. See [Attitude Offset](#attitude-offset-bent-sting-rectification).
+
+As on the internal path, air-on and air-off each resolve with **their own** alpha, so a tare taken at a different attitude still subtracts correctly.
+
+### Step 3: MRC Transfer
+
+**Source:** `transfer_external_loads_to_mrc()`
+
+The MATLAB pipeline never re-referenced external loads, so `mshift == [0, 0, 0]` short-circuits to a no-op and matches it exactly. With a nonzero shift, the rigid-body moment transfer is applied in model body axes (X back, Y right, Z up), with `mshift` the vector from the balance virtual centre to the model MRC:
+
+```
+M_mrc = M_bal - r x F
+
+Roll  = Roll  - (my·Fz - mz·Fy)
+Pitch = Pitch - (mz·Fx - mx·Fz)
+Yaw   = Yaw   - (mx·Fy - my·Fx)
+```
+
+These are the **resolved** moments from Step 2, not the raw `Mx/My/Mz` — on the half-span mount Pitch is `Mz` and Yaw is `My`.
+
+The wind-axis forces are rotated back to body axes to form F; on the half-span mount the resolution is a plane rotation, so it inverts directly rather than needing a 3x3 solve. Moments pass through BRF<->WRF unchanged, so they transfer straight back to the wind frame. Forces are untouched.
+
+### Where It Rejoins
+
+Tare subtraction ([Stage 6](#stage-6-tare-subtraction-air-off-removal)), tunnel conditions, coefficients and steady-state reduction are all shared.
+
+The balance's own six channels are kept in `BRFForces.elements`, the same slots an internal balance's bridge elements use, so they reach the table and the exports. The BRF force/moment attributes stay empty: there is no body-axis reduction on this path.
+
+### Raw Channels and Their Calibration
+
+The tunnel channels (`Pdiff`, `Ptot`, `Temp`) are recorded as **raw
+volts**, with the calibration that converts them stored alongside:
+
+| Attribute | Meaning |
+|-----------|---------|
+| `cal_slope`, `cal_offset` | `engineering = volts * slope + offset` |
+| `cal_unit` | the unit the calibration PRODUCES (`psid`, `psia`, `degC`, ...), converted to the chain's internal units afterwards |
+| `cal_type` | `linear` (apply the above) or `identity` (a smart indicator such as a Heise already reports engineering units, so there are no volts to scale) |
+
+The reduction applies this in `coefficients.py` ->
+`_pressure_channel_to_psi()` / `_temperature_channel_to_celsius()`, in
+priority order: the injected per-channel calibration, then a legacy
+external `.pcf`, then the built-in DaqBook default slopes. A run
+carrying no calibration therefore still reduces, on those defaults.
+
+Exports keep the pair together, so an exported file is self-describing
+rather than a column of unlabelled volts:
+
+- **MAT** — a `Channel_Cal` group beside `Raw`, with `slope`, `offset`, `unit` and `type` per channel
+- **HDF5** — the same four `cal_*` attribute names on each `Raw` dataset
+
+Only calibrated channels get an entry. The balance channels are already
+in engineering units and carry none.
+
+### Element Channel Names
+
+**Source:** `transforms.py` -> `element_channels()`
+
+Every balance fills the same six slots (columns 0-5 of `BRFForces.elements`), but which channels those are depends on the balance, and so does the unit:
+
+| Balance | Slot 0-5 | Units |
+|---------|----------|-------|
+| External (ATE) | `Fx, Fy, Fz, Mx, My, Mz` | 3 forces, 3 **moments** |
+| Internal, Force config | `N1, N2, Y1, Y2, Axial, Roll` | 6 forces |
+| Internal, Moment config | `AftPitch, AftYaw, FwdPitch, FwdYaw, Axial, Roll` | 6 forces |
+
+The case records which balance produced it (`balance_type`, `balance_config`) at reduction time, read from the run files rather than the session setting, and the table columns, CSV/Excel headers and the unsteady MAT/HDF5 export all take their names and unit labels from it. A run recording neither reads as an internal Force balance, the historical default.
+
+The `elem_*` attribute names on a case are historical slot labels only — what a slot holds depends on the balance, so never label a column from them.
+
+`EXTERNAL_CAL_BIAS` and `calc_uncertainty_ext_balance()` are ported from the MATLAB uncertainty routine and are used **only** for uncertainty estimation, not in the reduction above.
 
 ---
 
@@ -610,6 +756,53 @@ The model geometry defines the reference values used for non-dimensionalization 
 | Reference Area | S | Wing planform area — reference area for all coefficients |
 | Reference Span | b | Wing span — reference length for rolling and yawing moments |
 | MRC Shift | mshift | [x, y, z] offset from balance center to desired moment reference center |
+| Alpha Offset | alpha_offset | Added to every point's recorded angle of attack [deg] before reduction |
+| Beta Offset | beta_offset | Added to every point's recorded sideslip [deg] before reduction |
+
+### Attitude Offset (bent-sting rectification)
+
+A bent or drooped sting puts the model at a different attitude from the
+one the positioner recorded: the encoder reports the sting root, and the
+model sits at root + offset. Each geometry therefore carries an alpha and
+a beta offset, in degrees, applied in `reduce_single_point` before
+anything reads the attitude:
+
+```
+alpha_model = alpha_recorded + alpha_offset
+beta_model  = beta_recorded  + beta_offset
+```
+
+The offset is applied to the air-on point AND to its air-off tare, since
+the sting is just as bent with the wind off.
+
+**Which rotation the offset enters depends on where the balance sits.**
+An offset describes the model relative to its MOUNT; it does not move the
+balance. So:
+
+| Balance | Its axes are fixed to | Wind-axis rotation uses |
+|---------|-----------------------|-------------------------|
+| Internal (sting) | the model, which bends with it | the CORRECTED incidence |
+| External (ATE) | the turntable / mount | the RECORDED angle |
+
+Putting the offset into an external balance's resolution swings lift into
+the drag axis. On a B52 half-span run a 6 deg offset laid 2.2 lbf of
+spurious drag on top of a real 1.4 lbf, nearly tripling CD and dropping
+max L/D from 15.6 to 5.9 while CL barely moved. For an external balance
+the offset therefore changes only the reported incidence. Everything downstream then
+sees the corrected attitude: the body-to-wind resolution, the MRC moment
+transfer, the steady-state alpha/beta grid, the alpha filter, and the
+exports. Reducing a point recorded at 0 deg with a 12 deg offset is
+indistinguishable from reducing one recorded at 12 deg with no offset.
+
+The raw `Alpha` and `Beta` channels are NOT modified: the `Raw` export
+group and the time-history viewer show them exactly as recorded, so the
+correction is always visible and reversible. The offsets are written into
+the export geometry metadata (`geometry.alpha_offset_deg`,
+`geometry.beta_offset_deg`).
+
+Offsets are always degrees, independent of the geometry input unit
+system. Changing an offset in Edit > Model Geometry re-reduces every case
+assigned to that geometry, as any other geometry edit does.
 
 ### MRC Shift Convention
 
@@ -618,9 +811,59 @@ The MRC shift vector `[mshift_x, mshift_y, mshift_z]` defines the offset from th
 - **y:** Lateral (positive to port)
 - **z:** Vertical (positive down)
 
+### Commanded vs Measured Attitude
+
+Every point has two attitudes, and they are used for different things.
+
+| | Source | Used for |
+|---|--------|----------|
+| **Commanded** | `meta.run.alpha` / `beta`, the directory manifest, or the filename token | Grouping, filtering, export axes |
+| **Measured** | The `Alpha` / `Beta` channels, averaged over the point (plus any attitude offset) | Plotted x values, table columns, exported arrays |
+
+The positioner never lands exactly on the commanded angle, and it misses
+differently on every pass: a commanded alpha of 4.0 records as 3.949 on
+one speed step and 3.951 on the next. Both are the same point of the
+sweep, but rounding the measured value to a tenth puts them in different
+groups, so one angle becomes two traces, two entries in the alpha filter
+and two mostly-empty columns in the MATLAB export.
+
+The commanded value is a single number for every point taken at that
+angle, so it is the grouping key throughout: plot traces, the alpha/beta
+filters, the `Axes.alpha` / `Axes.beta` vectors of the MAT/HDF5 export,
+and the grid detection in `reduce_steady_state`.
+
+Speed follows the same rule. The commanded setpoint identifies a step,
+and when that setpoint IS a Mach it is also what the Mach filter offers:
+two runs commanded to M0.2 that held 0.205 and 0.207 are one condition
+and get one entry, which an average of what each measured cannot
+guarantee. A run commanded in Hz or RPM has no Mach setpoint to report,
+so each of its steps is labelled with its own mean measured Mach
+instead - still one value per step.
+
+Because the label is the command, a run whose filenames say `mach_1.00`
+is reported as M=1.000 even if the tunnel ran it at 0.09. That is a
+labelling fault in the acquisition, and surfacing it is deliberate; the
+Mach the tunnel actually held is in the data table and on the X Axis
+picker.
+
+Speed setpoints are read from the `{Hz|ftps|mps|RPM|mach}_<value>` token
+Freestream writes, and from the legacy bare `M0p25` / `M0.30` token that
+older TDMS runs carry. The legacy token has to be delimited and to have a
+decimal separator, so a configuration code such as `WPM0` is not mistaken
+for a speed and a bare `M0` is not read as Mach 0 (which would classify
+the run as a tare).
+
+The measured attitude is never overwritten. It is what the plot puts on
+the x axis, what the data table shows, and what `Position.Alpha` holds in
+an export, because it is where the model actually was.
+
+Runs that record no commanded value (legacy TDMS) fall back to grouping
+on the measured attitude, which is the historical behavior. A partial
+record is refused wholesale rather than mixing the two.
+
 ### Multi-Geometry Support
 
-Multiple named geometry definitions can be configured, each with its own MAC, span, reference area, and MRC. Individual test cases can be assigned different geometries (e.g., different wing configurations tested on the same balance). Cases are assigned geometry via right-click context menu, and re-reduction is triggered automatically.
+Multiple named geometry definitions can be configured, each with its own MAC, span, reference area, MRC, and alpha/beta attitude offset. Individual test cases can be assigned different geometries (e.g., different wing configurations tested on the same balance). Cases are assigned geometry via right-click context menu, and re-reduction is triggered automatically.
 
 ---
 
@@ -730,6 +973,42 @@ Both implement the same API: `plot()`, `clear()`, `refresh()`, `set_labels()`, `
 | C_n (yaw) vs Alpha | alpha | C_n |
 | Lateral vs Beta | beta | C_Y |
 
+**Case list:** `Show All` / `Hide All` toggle visibility; `Clear All`
+removes every loaded case after confirming. Clearing only drops the
+in-memory reduction (including geometry and calibration assignments) -
+nothing on disk is touched, so the run directories can be loaded again.
+
+**Legend:** the plot legend is draggable, and where you put it is kept
+across redraws, so adding more data does not move it back to the corner.
+
+**X Axis selector:**
+
+The `X Axis` dropdown overrides the x variable the plot type implies, so
+any plot can be re-cast against a different independent variable. It
+offers alpha, beta, Mach, Re, q, U_inf, every coefficient, L/D, and every
+variable defined in the data calculator. `Default` keeps the plot type's
+own x variable. It replaces the old `Plot vs beta` checkbox, which is now
+the beta entry.
+
+Choosing a SPEED variable (Mach, Re, q, U_inf) inverts how points are
+grouped into traces:
+
+| X variable | Trace grouping | A 3-speed, 8-alpha sweep draws |
+|------------|----------------|--------------------------------|
+| alpha, or a coefficient | one trace per speed step and sideslip | 3 curves of 8 points |
+| beta | one trace per angle of attack | 8 curves |
+| Mach, Re, q, U_inf | one trace per (alpha, beta) | 8 curves of 3 points |
+
+Without the inversion a Mach sweep would plot as a column of unconnected
+points, because each speed step holds only one point per angle. Points
+within a trace are ordered by the x variable itself, so a run where the
+tunnel overshot a setpoint still draws a monotonic line.
+
+`q` and `U_inf` are converted into the active output unit system and the
+axis is labelled accordingly, matching the data table. A calculator
+variable is labelled with its own name, since only the user knows its
+units.
+
 ---
 
 ## Export Capabilities
@@ -746,7 +1025,7 @@ Both implement the same API: `plot()`, `clear()`, `refresh()`, `set_labels()`, `
 **HDF5 Structure (when extended data enabled):**
 ```
 /calibration/           — balance and pressure cal metadata
-/geometry/              — reference values (MAC, span, area, MRC)
+/geometry/              — reference values (MAC, span, area, MRC, alpha/beta offset)
 /<case_name>/
     averaged/           — steady-state coefficients and tunnel conditions
     air_on/point_0/     — raw air-on time-series per test point

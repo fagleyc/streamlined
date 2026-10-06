@@ -48,8 +48,25 @@ BALANCE_GROUP_INTERNAL = 'StrainBook_0'
 BALANCE_GROUP_EXTERNAL = 'ATE_Balance'
 
 # Channels whose per-channel unit attribute decides the resolved-load
-# unit system of an external-balance file (Freestream writes 'N').
-_EXTERNAL_UNIT_PROBE_CHANNELS = ('Lift', 'Drag', 'Side')
+# unit system of an external-balance file. Current Freestream files
+# record the balance-frame axes (Fx/Fy/Fz forces, Mx/My/Mz moments);
+# legacy files used the wind words — probe both, new names first.
+_EXTERNAL_UNIT_PROBE_CHANNELS = ('Fz', 'Fx', 'Fy', 'Lift', 'Drag', 'Side')
+# ...and the moment channels, which are what separate the OGI's "Lb and
+# Lbft" setting from the chain's native lb / in-lb.
+_EXTERNAL_MOMENT_PROBE_CHANNELS = ('My', 'Mz', 'Mx', 'Pitch', 'Yaw', 'Roll')
+
+
+def _probe_unit(channel_units: Dict[str, Any],
+                channels: Tuple[str, ...]) -> str:
+    """First non-empty unit string among ``channels``, lowercased."""
+    for ch in channels:
+        unit = channel_units.get(ch)
+        if isinstance(unit, bytes):
+            unit = unit.decode('utf-8', errors='replace')
+        if isinstance(unit, str) and unit.strip():
+            return unit.strip().lower()
+    return ''
 
 
 def _finalize_load_units(raw: 'RawData',
@@ -57,26 +74,38 @@ def _finalize_load_units(raw: 'RawData',
     """
     Record a ``load_units`` marker for external-balance files.
 
-    Freestream's ATE_Balance channels carry a per-channel ``unit``
-    attribute ('N' / 'N*m'); the downstream reduction chain works in
-    lb / in-lb (deprecated/scripts/calc_coeffs.m 'External'), so the
-    unit system is surfaced in ``raw.properties['load_units']`` for
-    the reducers to convert on. Files without unit metadata get no
-    marker (treated as already lb / in-lb, the legacy behavior).
+    The ATE_Balance channels carry per-channel ``unit`` attributes; the
+    downstream chain works in lb / in-lb
+    (deprecated/scripts/calc_coeffs.m 'External'), so the unit system is
+    surfaced in ``raw.properties['load_units']`` for the reducers to
+    convert on.
+
+    The OGI's engineering-unit setting is operator-selectable — "Kg and
+    Kgm, N and Nm, Lb and Lbft" — and never appears on the wire, so the
+    recorded unit attributes are the only witness. All four systems get
+    distinct markers, in particular ``'lbft'`` for pounds-with-FEET,
+    whose moments need a x12 conversion the old "not-SI means already
+    native" rule would have missed. Files without unit metadata get no
+    marker (treated as already lb / in-lb, the legacy behaviour).
     """
     if raw.properties.get('balance_type') != 'external':
         return
     if 'load_units' in raw.properties:
         return
-    for ch in _EXTERNAL_UNIT_PROBE_CHANNELS:
-        unit = channel_units.get(ch)
-        if isinstance(unit, bytes):
-            unit = unit.decode('utf-8', errors='replace')
-        if isinstance(unit, str) and unit.strip():
-            u = unit.strip().lower()
-            raw.properties['load_units'] = (
-                'N' if u.startswith('n') else 'lb')
-            return
+    force_u = _probe_unit(channel_units, _EXTERNAL_UNIT_PROBE_CHANNELS)
+    if not force_u:
+        return
+    moment_u = _probe_unit(channel_units, _EXTERNAL_MOMENT_PROBE_CHANNELS)
+
+    if force_u.startswith('n'):
+        marker = 'N'
+    elif force_u.startswith('kg'):
+        marker = 'kg'
+    elif 'ft' in moment_u:
+        marker = 'lbft'
+    else:
+        marker = 'lb'
+    raw.properties['load_units'] = marker
 
 
 @dataclass
@@ -148,8 +177,23 @@ def _resample_channels_to_fastest(channels: Dict[str, Dict[str, Any]],
     ``channels`` maps channel name -> {'data': ndarray, 'time': ndarray,
     'group': str}, exactly as built by the TDMS/HDF5/MAT readers. Channels
     already on the fastest time base are copied (truncated to its length);
-    slower channels are cubic-interpolated onto it with extrapolation,
-    mirroring the historical read_tdms_file behavior.
+    slower channels are cubic-interpolated onto it.
+
+    Outside a slow channel's own time span the interpolant is CLAMPED to
+    its first/last sample rather than extrapolated. Cubic extrapolation
+    diverges cubically, so any group whose block ENDS EARLIER than the
+    fastest one's leaves a tail that the old ``fill_value='extrapolate'``
+    filled with nonsense: an ATE point carrying 35 load samples against
+    the DaqBook's 200 came back with a Lift channel reaching -1463 N
+    from data that never left 204..207 N, dragging the point mean from
+    205 N to 59 N.
+
+    Recorded runs usually escape this — the recorder pads every group to
+    a common block length, so the time bases coincide and nothing is
+    out of range — but nothing guarantees it, and the failure is silent
+    and unbounded when it does happen. Holding the end value is the
+    honest answer for a steady dwell: it cannot invent a number the
+    instrument never read.
     """
     if not channels:
         return
@@ -196,11 +240,13 @@ def _resample_channels_to_fastest(channels: Dict[str, Dict[str, Any]],
         ch_dt = ch['time'][1] - ch['time'][0] if len(ch['time']) > 1 else min_dt
 
         if not np.isclose(ch_dt, min_dt) or n < len(ref_time):
+            data = np.asarray(ch['data'], dtype=float)
             interp_func = interp1d(
-                ch['time'], ch['data'],
+                ch['time'], data,
                 kind='cubic' if n >= 4 else 'linear',
                 bounds_error=False,
-                fill_value='extrapolate'
+                # clamp, do NOT extrapolate — see the docstring
+                fill_value=(float(data[0]), float(data[-1]))
             )
             raw.data[name] = interp_func(ref_time)
         else:
@@ -275,6 +321,13 @@ def extract_speed_from_filename(filepath: str) -> Tuple[Optional[float],
                           re.IGNORECASE)
         if match:
             return float(match.group(1)), unit
+
+    # Legacy bare Mach token (M0p25) as a last resort, so a TDMS run
+    # named the old way still carries a speed SETPOINT and groups on it
+    # instead of on the Mach the tunnel happened to hold.
+    mach = extract_mach_from_filename(filepath)
+    if mach is not None:
+        return mach, 'mach'
     return None, None
 
 
@@ -891,6 +944,16 @@ def read_mat_file(filepath: str) -> Tuple[RawData, Dict[str, Any]]:
     return raw, properties
 
 
+# Self-describing markers that ride INSIDE a channel dict alongside the
+# real channels (see copy_balance_markers). They are metadata - a string,
+# a scalar, a small list, a nested dict - never a time series, so any
+# consumer that treats a channel dict as "one array per key" must skip
+# them or it will try to take len() of a 0-d value.
+BALANCE_MARKER_KEYS = ('balance_type', 'load_units', 'span_config',
+                       'speed_value', 'speed_unit', 'speed_setpoints',
+                       'channel_cal', 'alpha_nominal', 'beta_nominal')
+
+
 def copy_balance_markers(raw: RawData,
                          channel_dict: Dict[str, Any]) -> Dict[str, Any]:
     """
@@ -900,17 +963,17 @@ def copy_balance_markers(raw: RawData,
     The reduction chain receives plain channel dicts, so the markers
     ride along as dict entries: ``balance_type`` drives
     :func:`~.transforms.is_external_balance_data`, ``load_units`` drives
-    the SI -> lb/in-lb conversion in
-    :func:`~.external_balance.external_loads_to_ips`, the speed
+    the unit conversion in
+    :func:`~.external_balance.external_loads_to_ips`, ``span_config``
+    selects the mount-dependent channel resolution in
+    :func:`~.external_balance.resolve_external_wrf`, the speed
     markers (``speed_value`` / ``speed_unit`` / ``speed_setpoints``)
     carry the tunnel-speed sweep dimension through to the reducers, and
     ``channel_cal`` carries freestream's injected per-channel tunnel
     calibration (so :func:`~.coefficients.calc_tunnel_conditions` converts
     raw volts -> engineering units with no external .pcf).
     """
-    for key in ('balance_type', 'load_units',
-                'speed_value', 'speed_unit', 'speed_setpoints',
-                'channel_cal'):
+    for key in BALANCE_MARKER_KEYS:
         if key in raw.properties:
             channel_dict[key] = raw.properties[key]
     return channel_dict
@@ -1225,6 +1288,15 @@ RUN_FILE_PATTERNS = ('*.tdms', '*.h5', '*.hdf5', '*.mat')
 MANIFEST_FILENAME = 'manifest.json'
 MANIFEST_SCHEMA_VERSION = 1
 
+# Subdirectories of a run directory that hold OUTPUT, not runs.
+# Freestream writes its reduction products next to the run files, in
+# 'processed/' (a .mat, a .xlsx and an HTML report). Those share the run
+# extensions but are results OF a run, never a run, so a recursive scan
+# must not index them: doing so makes the folder disagree with
+# manifest.json ("lists 32 point(s) but 33 run file(s) are present") and
+# feeds a reduced summary back in as if it were a data point.
+OUTPUT_SUBDIRS = ('processed',)
+
 
 def find_run_files(directory: str, recursive: bool = False) -> list:
     """
@@ -1241,13 +1313,29 @@ def find_run_files(directory: str, recursive: bool = False) -> list:
     -------
     list
         List of Path objects, excluding ``manifest.json`` (an index, not
-        a run file).
+        a run file) and anything under an output subdirectory (see
+        :data:`OUTPUT_SUBDIRS`).
     """
     data_dir = Path(directory)
     files = sorted(f for pat in RUN_FILE_PATTERNS
                    for f in (data_dir.rglob(pat) if recursive
                              else data_dir.glob(pat)))
-    return [f for f in files if f.name.lower() != MANIFEST_FILENAME]
+    return [f for f in files
+            if f.name.lower() != MANIFEST_FILENAME
+            and not _in_output_subdir(f, data_dir)]
+
+
+def _in_output_subdir(path: Path, root: Path) -> bool:
+    """True when ``path`` sits under an output subdirectory of ``root``.
+
+    Only directory components BELOW ``root`` are considered, so a run
+    directory that is itself named 'processed' still indexes normally.
+    """
+    try:
+        parts = path.relative_to(root).parts[:-1]
+    except ValueError:
+        return False
+    return any(part.lower() in OUTPUT_SUBDIRS for part in parts)
 
 
 def read_run_manifest(directory: str) -> Dict[str, Any]:
@@ -1306,6 +1394,68 @@ def read_run_manifest(directory: str) -> Dict[str, Any]:
         return {}
 
     return manifest
+
+
+def find_run_balance_cal(directory: str) -> Dict[str, Any]:
+    """
+    Resolve the run-local balance calibration a run directory carries.
+
+    Freestream copies the active balance ``.vol`` into the run directory
+    at run start and records the hand-off in ``manifest.json`` as a
+    top-level ``"balance_cal"`` object::
+
+        {"balance_cal": {"vol_file": "50lb 2026_07_24.vol",
+                         "vol_source": "C:/.../CalFiles/...",
+                         "cal_type": "Linear", "balance_config": "Moment",
+                         "balance_type": "internal",
+                         "balance_serial": "..."}, ...}
+
+    Resolution order:
+
+    1. the manifest's ``balance_cal.vol_file`` when that file exists in
+       the directory (its recorded ``cal_type`` etc. ride along);
+    2. else the directory's SINGLE ``*.vol`` file (``cal_type`` falls
+       back to the manifest ``config`` block when one is recorded).
+
+    Two or more ``.vol`` files with no manifest entry are ambiguous and
+    resolve to nothing — never guess a calibration.
+
+    Parameters
+    ----------
+    directory : str
+        Directory holding the run files
+
+    Returns
+    -------
+    dict
+        ``{'vol_path': str, 'cal_type': str, ...}`` with the balance
+        metadata recorded for the run, or ``{}`` when the directory
+        carries no unambiguous run-local calibration.
+    """
+    data_dir = Path(directory)
+    manifest = read_run_manifest(data_dir)
+
+    entry = manifest.get('balance_cal')
+    if isinstance(entry, dict):
+        name = str(entry.get('vol_file') or '')
+        path = data_dir / name if name else None
+        if path is not None and path.is_file():
+            resolved = {k: v for k, v in entry.items()
+                        if k != 'vol_file' and v not in (None, '')}
+            resolved['vol_path'] = str(path)
+            return resolved
+
+    vols = sorted(data_dir.glob('*.vol'))
+    if len(vols) != 1:
+        return {}
+    config = manifest.get('config')
+    cal_type = ''
+    if isinstance(config, dict):
+        cal_type = str(config.get('cal_type') or '')
+    resolved = {'vol_path': str(vols[0])}
+    if cal_type:
+        resolved['cal_type'] = cal_type
+    return resolved
 
 
 def _file_info_from_manifest_point(path: Path, point: Dict[str, Any],
@@ -1639,7 +1789,20 @@ def extract_mach_from_filename(filepath: str) -> Optional[float]:
 
     filename = Path(filepath).stem
     mach_match = re.search(r'mach[_\s]*(-?\d+\.?\d*)', filename, re.IGNORECASE)
-    return float(mach_match.group(1)) if mach_match else None
+    if mach_match:
+        return float(mach_match.group(1))
+
+    # Legacy convention: a bare M<int>p<frac> / M<int>.<frac> token, as in
+    # 'DrpPd3_NB1_TF1_R01_M0p25_Sp26_Alpha_-10.0'.  The token has to be
+    # delimited and to carry a decimal separator: that is what keeps it
+    # from matching a configuration code (the M of 'WPM0' is not preceded
+    # by a delimiter) and from reading a bare 'M0' as Mach 0, which would
+    # then classify the run as a tare.
+    legacy = re.search(r'(?:^|[_\s-])M(\d+)[p.](\d+)(?=$|[_\s-])',
+                       filename)
+    if legacy:
+        return float('{0}.{1}'.format(legacy.group(1), legacy.group(2)))
+    return None
 
 
 def extract_alpha_beta_from_filename(filepath: str) -> Tuple[float, float]:
@@ -2014,3 +2177,61 @@ def group_files_by_configuration(files: list) -> Dict[str, Dict[str, list]]:
                                x.speed if x.speed is not None else 0.0))
 
     return grouped
+
+
+def run_balance_type(directory: str) -> str:
+    """Balance type recorded by the runs in a directory.
+
+    Returns ``'external'`` when the runs carry resolved loads from an
+    external balance (the ATE), ``'internal'`` when they carry bridge
+    volts needing a ``.vol``, or ``''`` when nothing says.
+
+    Freestream stamps ``balance_type`` into every run file's root
+    metadata, and the directory manifest repeats it when a calibration
+    was staged. Metadata is read without unpacking channel arrays, and
+    the first file that answers wins: a directory mixing balance types
+    is not a thing.
+    """
+    try:
+        manifest = read_run_manifest(directory)
+    except Exception:                                  # noqa: BLE001
+        manifest = {}
+    entry = (manifest or {}).get('balance_cal') or {}
+    btype = str(entry.get('balance_type') or '').strip().lower()
+    if btype in ('external', 'internal'):
+        return btype
+
+    for path in find_run_files(directory)[:8]:
+        try:
+            meta = read_run_metadata(str(path))
+        except Exception:                              # noqa: BLE001
+            continue
+        btype = str(meta.get('balance_type') or '').strip().lower()
+        if btype in ('external', 'internal'):
+            return btype
+    return ''
+
+
+def run_span_config(directory: str) -> str:
+    """Model-span configuration recorded by the runs in a directory.
+
+    Returns ``'half'`` for a semispan model on the turntable,
+    ``'full'`` for a full-span model on the incidence strut, or ``''``
+    when nothing says.
+
+    The marker decides which resolution algorithm an external-balance
+    run needs (see
+    :func:`~.external_balance.resolve_external_wrf`), so the GUI shows
+    it rather than letting a silent default pick for the operator.
+    Freestream stamps ``span_config`` into every run file's root
+    metadata from the positioner's own mapping.
+    """
+    for path in find_run_files(directory)[:8]:
+        try:
+            meta = read_run_metadata(str(path))
+        except Exception:                              # noqa: BLE001
+            continue
+        span = str(meta.get('span_config') or '').strip().lower()
+        if span in ('full', 'half'):
+            return span
+    return ''

@@ -30,7 +30,8 @@ try:
         extract_alpha_beta_from_filename, read_run_file,
         copy_balance_markers, FileInfo,
         parse_run_file, scan_run_directory, read_run_config,
-        reference_geometry_from_config
+        reference_geometry_from_config, find_run_balance_cal,
+        run_balance_type, run_span_config
     )
     from utils.windtunnel.transforms import is_external_balance_data
     BACKEND_AVAILABLE = True
@@ -145,6 +146,52 @@ def group_files_simple(files: list) -> Dict[str, Dict[str, list]]:
             grouped[config][air_state].sort(key=lambda x: (x.alpha, x.beta))
 
     return grouped
+
+
+def attach_nominal_attitude(case: TestCase, ss) -> None:
+    """Populate case.alpha_nominal / beta_nominal from the reduction.
+
+    reduce_steady_state carries the commanded attitude in the reduced
+    point order and leaves it EMPTY when any point lacked a record, so
+    this only reshapes it onto the case.  A size that would misalign
+    with alphas leaves the arrays empty rather than wrong, and the case
+    then groups on the measured attitude as it always did.
+
+    Module level because BOTH paths that reduce a case need it: the
+    worker on first load, and DataController.reprocess_case when a
+    geometry edit re-reduces.
+    """
+    for attr in ('alpha_nominal', 'beta_nominal'):
+        raw = getattr(ss, attr, None)
+        values = (np.asarray(raw, dtype=float) if raw is not None
+                  else np.array([]))
+        if values.size == 0 or values.size != case.alphas.size:
+            setattr(case, attr, np.array([]))
+        else:
+            setattr(case, attr, values.reshape(case.alphas.shape))
+
+
+def attach_speed_setpoints(case: TestCase, ss) -> None:
+    """Populate case.speeds / case.speed_unit, one setpoint per point.
+
+    The setpoint is the speed COMMANDED for a point, which is what
+    identifies the step of a speed sweep it belongs to; the measured
+    Mach drifts within a step and cannot group them (see
+    TestCase.point_machs).  reduce_steady_state already carries the
+    setpoints in ss.speeds in the reduced point order, so this only
+    reshapes them onto the case.  A size that would misalign with
+    alphas leaves case.speeds EMPTY rather than wrong.
+
+    Module level for the same reason as attach_nominal_attitude.
+    """
+    case.speed_unit = str(getattr(ss, 'speed_unit', '') or '')
+    raw = getattr(ss, 'speeds', None)
+    speeds = (np.asarray(raw, dtype=float) if raw is not None
+              else np.array([]))
+    if speeds.size == 0 or speeds.size != case.alphas.size:
+        case.speeds = np.array([])
+        return
+    case.speeds = speeds.reshape(case.alphas.shape)
 
 
 class ProcessingWorker(QRunnable):
@@ -359,6 +406,27 @@ class ProcessingWorker(QRunnable):
                 alphas, betas, n_alpha, n_beta, index
             )
 
+    def _run_local_balance_cal(self, file_infos):
+        """Build a BalanceCalibration from the .vol freestream copied into
+        the run directory at run start (resolved via the manifest's
+        'balance_cal' entry, else the directory's single *.vol — see
+        find_run_balance_cal), or None when the directory carries no
+        unambiguous run-local cal or it fails to parse."""
+        if not BACKEND_AVAILABLE or not file_infos:
+            return None
+        try:
+            resolved = find_run_balance_cal(
+                str(Path(file_infos[0].filepath).parent))
+            if not resolved:
+                return None
+            cal = read_vol_file(resolved['vol_path'])
+            if not cal:
+                return None
+            return calc_coeffs(cal, resolved.get('cal_type')
+                               or self.settings.get('cal_type', 'Linear'))
+        except Exception:
+            return None
+
     def _injected_balance_cal(self, file_infos):
         """Build a BalanceCalibration from the matrix freestream injected into
         the run files (peek the first file's /meta/devices/<balance>), or None
@@ -414,9 +482,12 @@ class ProcessingWorker(QRunnable):
             # Balance calibration precedence:
             #   1. an explicitly loaded .vol OVERRIDES everything (reprocess
             #      with a different balance cal on demand),
-            #   2. else the calibration MATRIX freestream injected into the
+            #   2. else the run-local .vol freestream copied into the run
+            #      directory at run start (manifest 'balance_cal' entry, or
+            #      the directory's single *.vol),
+            #   3. else the calibration MATRIX freestream injected into the
             #      run files (no .vol needed),
-            #   3. else none — internal data then fails with a reported
+            #   4. else none — internal data then fails with a reported
             #      error; an external (ATE) balance needs no balance cal.
             if self.balance_cal:
                 daq.cal = self.balance_cal
@@ -424,10 +495,15 @@ class ProcessingWorker(QRunnable):
                 daq.cal_balance(self.balance_cal_file,
                                 self.settings.get('cal_type', 'Linear'))
             else:
-                injected = self._injected_balance_cal(
+                run_local = self._run_local_balance_cal(
                     air_on_files or air_off_files)
-                if injected is not None:
-                    daq.cal = injected
+                if run_local is not None:
+                    daq.cal = run_local
+                else:
+                    injected = self._injected_balance_cal(
+                        air_on_files or air_off_files)
+                    if injected is not None:
+                        daq.cal = injected
 
             # Pressure calibration (.pcf) removed — tunnel pressure/temp cal is
             # injected into the run files and applied by the reduction.
@@ -439,8 +515,10 @@ class ProcessingWorker(QRunnable):
             mrc = self.geometry.get('mrc', [0.0, 0.0, 0.0])
             units = self.geometry.get('units', 'IPS')
 
-            daq.set_geometry(MAC=mac, S=ref_area, MRC=mrc, units=units,
-                             span=span)
+            daq.set_geometry(
+                MAC=mac, S=ref_area, MRC=mrc, units=units, span=span,
+                alpha_offset=self.geometry.get('alpha_offset', 0.0) or 0.0,
+                beta_offset=self.geometry.get('beta_offset', 0.0) or 0.0)
 
             # Load only this configuration's files (not the whole directory)
             if directory is None:
@@ -463,6 +541,7 @@ class ProcessingWorker(QRunnable):
                 raw_entry['AirOn'] = raw_on.data
                 raw_entry['AirOn']['Time'] = raw_on.time
                 copy_balance_markers(raw_on, raw_entry['AirOn'])
+                self._inject_nominal_setpoints(raw_entry['AirOn'], on_info)
 
                 # Find matching AirOff file by alpha/beta
                 matched = False
@@ -523,9 +602,19 @@ class ProcessingWorker(QRunnable):
                 # Per-point acquisition metadata (run number, hysteresis
                 # leg) aligned to the reduced point order
                 self._attach_point_metadata(case, on_sorted, ss)
+                attach_speed_setpoints(case, ss)
+                attach_nominal_attitude(case, ss)
 
                 # Store DAQ reference for later use
                 case.daq = daq
+                # Which balance produced this case, so the six element
+                # slots can be named for it downstream. Read from the
+                # data rather than the session setting: a directory is
+                # one balance, and the run files say which.
+                case.balance_type = ('internal' if needs_cal
+                                     else 'external')
+                case.balance_config = str(
+                    getattr(daq.fac, 'balance_config', 'Force') or 'Force')
 
                 # Transfer tunnel conditions and forces/moments from reduced data
                 if daq.red and len(daq.red) > 0:
@@ -725,6 +814,34 @@ class ProcessingWorker(QRunnable):
             case.sweep_dirs = np.array(legs, dtype=str).reshape(
                 case.alphas.shape)
 
+    @staticmethod
+    def _inject_nominal_setpoints(channels: dict, info) -> None:
+        """Ride the point's COMMANDED alpha/beta/speed in with its channels.
+
+        FileInfo carries what the run was ASKED for, read from the file's
+        own metadata, the directory manifest, or the filename.  The
+        reduction needs it because the measured Alpha/Beta channels jitter
+        about the commanded angle, and grouping on the measured value
+        splits one sweep point into several.  They travel as markers (see
+        data_io.BALANCE_MARKER_KEYS) so nothing mistakes them for channels.
+
+        The speed setpoint only fills in when the file recorded no
+        speed_value marker of its own; without it the reduction would fall
+        back to averaging the measured Speed channel.
+        """
+        alpha = getattr(info, 'alpha', None)
+        if alpha is not None:
+            channels['alpha_nominal'] = float(alpha)
+        beta = getattr(info, 'beta', None)
+        if beta is not None:
+            channels['beta_nominal'] = float(beta)
+        speed = getattr(info, 'speed', None)
+        if channels.get('speed_value') is None and speed is not None:
+            channels['speed_value'] = float(speed)
+        unit = getattr(info, 'speed_unit', None)
+        if not channels.get('speed_unit') and unit:
+            channels['speed_unit'] = str(unit)
+
     def _create_case_from_files(self, case_name: str, config_name: str,
                                  files: list, alphas: list, betas: list,
                                  n_alpha: int, n_beta: int, index: int) -> TestCase:
@@ -823,6 +940,10 @@ class DataController(QObject):
     status_changed = pyqtSignal(str)
     error_occurred = pyqtSignal(str, str)
     config_loaded = pyqtSignal(str)  # Config file path
+    #: 'external' | 'internal' | '' — emitted when a data directory is
+    #: loaded so the calibration panel can disable the .vol input for a
+    #: balance that has no bridge volts to calibrate
+    balance_type_detected = pyqtSignal(str)
 
     def __init__(self, model: DataModel, settings: AppSettings):
         super().__init__()
@@ -831,6 +952,12 @@ class DataController(QObject):
 
         self._balance_cal = None
         self._balance_cal_file = None
+        #: balance type of the loaded runs; 'external' means resolved
+        #: loads and no .vol requirement
+        self._run_balance_type = ""
+        #: 'full' | 'half' | '' — model-span configuration of the
+        #: loaded runs; selects the external-balance resolution
+        self._run_span_config = ""
         self._pressure_cal = None
         self._pressure_cal_file = None
         self._current_worker = None
@@ -1025,8 +1152,22 @@ class DataController(QObject):
         # already wrote into every file.
         self._seed_config_from_run_files(valid_dirs)
 
-        # Balance calibration is required to compute forces
-        if not self._balance_cal and not self._balance_cal_file:
+        # Balance calibration is required to compute forces from BRIDGE
+        # VOLTS. An external balance (the ATE) streams resolved loads in
+        # engineering units, so there is nothing for a .vol to calibrate
+        # and demanding one blocks a perfectly reducible run.
+        if self._run_balance_type == 'external':
+            span = self._run_span_config
+            span_note = {
+                'half': " ½-span mount: channels resolved with the yaw "
+                        "(alpha) rotation",
+                'full': " full-span mount: channels are already wind-axis",
+            }.get(span, " span configuration not recorded — assuming "
+                        "full span")
+            self.status_changed.emit(
+                "External balance detected — resolved loads, no balance "
+                "calibration required;" + span_note)
+        elif not self._balance_cal and not self._balance_cal_file:
             self.error_occurred.emit(
                 "No Balance Calibration",
                 "Load a balance calibration (.vol) file before processing data.\n\n"
@@ -1075,6 +1216,8 @@ class DataController(QObject):
             'span': default_geo.get('span', 1.0),
             'mrc': default_geo.get('mrc', [0.0, 0.0, 0.0]),
             'units': default_geo.get('units', 'IPS'),
+            'alpha_offset': default_geo.get('alpha_offset', 0.0) or 0.0,
+            'beta_offset': default_geo.get('beta_offset', 0.0) or 0.0,
             'output_units': self.model.output_units,
         }
 
@@ -1125,6 +1268,36 @@ class DataController(QObject):
         """
         if not BACKEND_AVAILABLE:
             return
+
+        # balance type first: it decides whether a .vol is required at
+        # all, and it is cheap (metadata only, no channel arrays)
+        btype = ""
+        for directory in directories:
+            try:
+                btype = run_balance_type(directory)
+            except Exception:                          # noqa: BLE001
+                traceback.print_exc()
+                btype = ""
+            if btype:
+                break
+        self._run_balance_type = btype
+        self.balance_type_detected.emit(btype)
+
+        # ...then the model-span configuration, which decides HOW the
+        # external balance's six channels become wind-axis loads (a
+        # ½-span model yaws the balance with it, so the channels are
+        # body-fixed and permuted). Silently defaulting this was what
+        # made ½-span drag come out backwards, so it is surfaced.
+        span = ""
+        for directory in directories:
+            try:
+                span = run_span_config(directory)
+            except Exception:                          # noqa: BLE001
+                traceback.print_exc()
+                span = ""
+            if span:
+                break
+        self._run_span_config = span
 
         config = {}
         for directory in directories:
@@ -1355,7 +1528,9 @@ class DataController(QObject):
                 S=geo.get('ref_area', 1.0),
                 MRC=geo.get('mrc', [0.0, 0.0, 0.0]),
                 units=geo.get('units', 'IPS'),
-                span=geo.get('span', 1.0)
+                span=geo.get('span', 1.0),
+                alpha_offset=geo.get('alpha_offset', 0.0) or 0.0,
+                beta_offset=geo.get('beta_offset', 0.0) or 0.0,
             )
 
             # Apply per-case calibration if assigned (includes its own
@@ -1392,6 +1567,8 @@ class DataController(QObject):
             case.CRoll_std = ss.CRoll_std
             case.CPitch_std = ss.CPitch_std
             case.CYaw_std = ss.CYaw_std
+            attach_speed_setpoints(case, ss)
+            attach_nominal_attitude(case, ss)
 
             # Re-apply blockage correction (if any) with refreshed data
             self._apply_blockage_to_case(case)
@@ -1833,6 +2010,8 @@ class DataController(QObject):
                         'span': geo_config.get('span', 1.0),
                         'mrc': geo_config.get('mrc', [0.0, 0.0, 0.0]),
                         'units': geo_config.get('units', 'IPS'),
+                        'alpha_offset': geo_config.get('alpha_offset', 0.0),
+                        'beta_offset': geo_config.get('beta_offset', 0.0),
                     }
                 }
                 self.model.default_geometry = 'Default'
@@ -1917,6 +2096,8 @@ class DataController(QObject):
             'ref_area': self.model.ref_area,
             'mrc': self.model.mrc,
             'units': self.model.units,
+            'alpha_offset': self.model.alpha_offset,
+            'beta_offset': self.model.beta_offset,
             'output_units': self.model.output_units,
             'facility': self.model.facility,
         }

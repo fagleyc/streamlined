@@ -27,6 +27,61 @@ class BRFForces:
     elements: np.ndarray = field(default_factory=lambda: np.array([]))
 
 
+#: The six element channels each balance produces, in the slot order of
+#: ``BRFForces.elements`` columns 0..5, with the unit each carries.
+#:
+#: An internal balance reads six bridges, all of them forces. An
+#: external balance reads three forces and three moments - so the names
+#: AND the units differ, and an export that assumes one balance mislabels
+#: the other. The external tuple must match
+#: :data:`external_balance.EXTERNAL_CHANNEL_ORDER`; a test pins that.
+_ELEMENT_CHANNELS = {
+    ('external', ''): (('Fx', 'force'), ('Fy', 'force'), ('Fz', 'force'),
+                       ('Mx', 'moment'), ('My', 'moment'),
+                       ('Mz', 'moment')),
+    ('internal', 'Moment'): (('AftPitch', 'force'), ('AftYaw', 'force'),
+                             ('FwdPitch', 'force'), ('FwdYaw', 'force'),
+                             ('Axial', 'force'), ('Roll', 'force')),
+    ('internal', 'Force'): (('N1', 'force'), ('N2', 'force'),
+                            ('Y1', 'force'), ('Y2', 'force'),
+                            ('Axial', 'force'), ('Roll', 'force')),
+}
+
+
+def element_channels(balance_type: str = '',
+                     balance_config: str = 'Force') -> tuple:
+    """The six element channels this balance produces, in slot order.
+
+    Returns a tuple of ``(name, unit_kind)`` pairs, where ``unit_kind``
+    is ``'force'`` or ``'moment'``, aligned with columns 0..5 of
+    ``BRFForces.elements``.
+
+    An unknown or empty ``balance_type`` reads as internal, and an
+    unrecognised ``balance_config`` as 'Force', which is the historical
+    default and what a run that records neither should still produce.
+
+    Parameters
+    ----------
+    balance_type : str
+        ``'external'`` (the ATE) or ``'internal'`` (a sting balance).
+    balance_config : str
+        ``'Force'`` or ``'Moment'``; ignored for an external balance,
+        which has only the one channel set.
+    """
+    if str(balance_type).strip().lower() == 'external':
+        return _ELEMENT_CHANNELS[('external', '')]
+    config = ('Moment' if str(balance_config).strip().lower() == 'moment'
+              else 'Force')
+    return _ELEMENT_CHANNELS[('internal', config)]
+
+
+def element_channel_names(balance_type: str = '',
+                          balance_config: str = 'Force') -> tuple:
+    """Just the six names, in slot order (see :func:`element_channels`)."""
+    return tuple(name for name, _ in
+                 element_channels(balance_type, balance_config))
+
+
 @dataclass
 class WRFForces:
     """Wind Reference Frame forces and moments."""
@@ -38,9 +93,23 @@ class WRFForces:
     Yaw: np.ndarray = field(default_factory=lambda: np.array([]))
 
 
-# Resolved external-balance (ATE) channels: wind-axis loads in
-# engineering units, NOT bridge volts. Order matches WRFForces fields.
+# Resolved external-balance (ATE) channels, as WRFForces SLOT names.
+# The slots keep the historical wind words (they genuinely are wind-axis
+# loads once the span-aware resolution has run; full span is the
+# identity). Order matches WRFForces fields.
 EXTERNAL_LOAD_CHANNELS = ('Lift', 'Drag', 'Side', 'Roll', 'Pitch', 'Yaw')
+
+# Recorded-name sources for each slot, newest first. Current Freestream
+# files record the BALANCE-FRAME axes (X back, Y right, Z up):
+#   Fx = drag-direction force, Fy = side force, Fz = vertical force,
+#   Mx = roll, My = pitch, Mz = yaw (about the balance axes).
+# Older files recorded the same channels under wind words, which was
+# only accurate for the full-span mount — the values are identical,
+# only the label honesty changed.
+EXTERNAL_CHANNEL_SOURCES = {
+    'Lift': ('Fz', 'Lift'), 'Drag': ('Fx', 'Drag'), 'Side': ('Fy', 'Side'),
+    'Roll': ('Mx', 'Roll'), 'Pitch': ('My', 'Pitch'), 'Yaw': ('Mz', 'Yaw'),
+}
 
 # Bridge channels that mark raw internal-balance (volts) data.
 _BRIDGE_CHANNELS = ('N1', 'N2', 'Y1', 'Y2',
@@ -82,7 +151,8 @@ def is_external_balance_data(raw_data: Dict[str, Any]) -> bool:
     if isinstance(marker, str):
         return marker.strip().lower() == 'external'
 
-    has_loads = all(ch in raw_data for ch in ('Lift', 'Drag', 'Pitch'))
+    has_loads = (all(ch in raw_data for ch in ('Fz', 'Fx', 'My'))
+                 or all(ch in raw_data for ch in ('Lift', 'Drag', 'Pitch')))
     has_bridges = any(ch in raw_data for ch in _BRIDGE_CHANNELS)
     return has_loads and not has_bridges
 
@@ -92,11 +162,15 @@ def wrf_from_resolved_loads(raw_data: Dict[str, np.ndarray],
     """
     Build WRFForces directly from resolved external-balance channels.
 
-    ATE external-balance files already carry wind-axis loads (Lift,
-    Drag, Side and Roll, Pitch, Yaw moments) in engineering units, so
-    neither the bridge-to-force calibration (:func:`calc_brf_forces`)
-    nor the body-to-wind rotation (:func:`calc_wrf_forces`) applies —
-    the channels pass straight through under their in-file names.
+    ATE external-balance files carry the six resolved load channels in
+    engineering units, so neither the bridge-to-force calibration
+    (:func:`calc_brf_forces`) nor the volts-era body-to-wind rotation
+    (:func:`calc_wrf_forces`) applies. Current files record the
+    balance-frame names (Fx/Fy/Fz/Mx/My/Mz); legacy files used wind
+    words — each WRFForces slot takes the first recorded source present
+    (see :data:`EXTERNAL_CHANNEL_SOURCES`). The slots only truly mean
+    wind-axis loads after :func:`~.external_balance.resolve_external_wrf`
+    has applied the mount-dependent resolution.
 
     Parameters
     ----------
@@ -111,17 +185,24 @@ def wrf_from_resolved_loads(raw_data: Dict[str, np.ndarray],
     WRFForces
         Wind reference frame loads, passed through unmodified.
     """
+    def _source(slot):
+        for name in EXTERNAL_CHANNEL_SOURCES[slot]:
+            if name in raw_data and raw_data[name] is not None:
+                return raw_data[name]
+        return None
+
     if n_samples is None:
         for ch in EXTERNAL_LOAD_CHANNELS:
-            if ch in raw_data:
-                n_samples = len(np.atleast_1d(raw_data[ch]))
+            value = _source(ch)
+            if value is not None:
+                n_samples = len(np.atleast_1d(value))
                 break
         else:
             n_samples = 0
 
     wrf = WRFForces()
     for ch in EXTERNAL_LOAD_CHANNELS:
-        value = raw_data.get(ch)
+        value = _source(ch)
         if value is None:
             arr = np.zeros(n_samples)
         else:
@@ -138,6 +219,14 @@ class Geometry:
     b: float = 1.0  # Reference span (inches) — used for CRoll, CYaw
     mshift: np.ndarray = field(default_factory=lambda: np.array([0.0, 0.0, 0.0]))  # MRC shift (x, y, z)
     flip: bool = False
+    # Attitude offsets [deg], ADDED to the recorded alpha and beta of every
+    # point (air-on and air-off alike) before the attitude is used for
+    # anything. They rectify a systematic misalignment between what the
+    # positioner recorded and what the model actually saw, the usual case
+    # being a bent or drooped sting: the recorded angle is the sting
+    # root, the model sits at root + offset.
+    alpha_offset: float = 0.0
+    beta_offset: float = 0.0
 
 
 def get_distance_values(cal: BalanceCalibration) -> Dict[str, float]:

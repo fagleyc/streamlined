@@ -54,3 +54,6 @@ brandt/*plots/
 # Local scratch (not for the public repo)
 temp/
 Cp_test.json
+
+# run data stays on disk, not in the repo (~460 MB; tests skip without it)
+data/

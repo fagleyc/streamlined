@@ -15,9 +15,12 @@ from .transforms import (
     Geometry, BRFForces, WRFForces,
     calc_brf_forces, calc_wrf_forces,
     subtract_wrf_forces,
-    is_external_balance_data, wrf_from_resolved_loads
+    is_external_balance_data
 )
-from .external_balance import external_loads_to_ips
+from .external_balance import (external_loads_to_ips, resolve_external_wrf,
+                               normalize_span_config,
+                               build_load_matrix_from_channels,
+                               transfer_external_loads_to_mrc)
 from .coefficients import (
     AeroCoefficients, TunnelConditions,
     calc_tunnel_conditions, calc_aero_coeffs
@@ -38,6 +41,13 @@ class ReducedDataPoint:
     speed_value: Optional[float] = None
     speed_unit: Optional[str] = None
     speed_setpoints: Optional[Any] = None
+    # The COMMANDED attitude for this point, as the run recorded it
+    # (meta.run / the directory manifest / the filename). The measured
+    # Alpha/Beta channels jitter about it by a few hundredths, so the
+    # commanded value is what identifies WHICH sweep point this is.
+    # None when the run carried no such record.
+    alpha_nominal: Optional[float] = None
+    beta_nominal: Optional[float] = None
     time: np.ndarray = field(default_factory=lambda: np.array([]))
     air_on: Dict[str, Any] = field(default_factory=dict)
     air_off: Dict[str, Any] = field(default_factory=dict)
@@ -58,6 +68,12 @@ class SteadyStateData:
     betas: np.ndarray = field(default_factory=lambda: np.array([]))
     # Tunnel speed setting per point (organization axis after alpha/beta)
     speeds: np.ndarray = field(default_factory=lambda: np.array([]))
+    # COMMANDED alpha/beta per point, same shape as alphas/betas. These
+    # are the grouping keys (see ReducedDataPoint.alpha_nominal); EMPTY
+    # when any point of the set carried no commanded record, so a
+    # consumer either gets a complete key array or none at all.
+    alpha_nominal: np.ndarray = field(default_factory=lambda: np.array([]))
+    beta_nominal: np.ndarray = field(default_factory=lambda: np.array([]))
     # Distinct speeds swept (surfaces a multi-velocity sweep) + its unit
     speed_setpoints: np.ndarray = field(default_factory=lambda: np.array([]))
     speed_unit: Optional[str] = None
@@ -126,9 +142,29 @@ def reduce_single_point(raw_on: Dict[str, np.ndarray],
     result.air_on = dict(raw_on) if raw_on else {}
     result.air_off = dict(raw_off) if raw_off else {}
 
-    # Store position data from AirON
-    result.alpha = raw_on.get('Alpha', np.array([0.0]))
-    result.beta = raw_on.get('Beta', np.array([0.0]))
+    # Position data from AirON, in two forms.
+    #
+    # alpha_raw / beta_raw are what the positioner RECORDED: where the
+    # mount is actually pointing.  result.alpha / result.beta add the
+    # geometry's attitude offsets and are the model's AERODYNAMIC
+    # incidence, which is what gets reported and what normalizes the
+    # coefficients.
+    #
+    # The distinction matters for load resolution.  An offset describes
+    # the model relative to its mount (a bent sting, or a wing rigged at
+    # incidence); it does not move the balance.  So a rotation out of a
+    # MOUNT-fixed frame needs alpha_raw, and a rotation out of a
+    # MODEL-fixed frame needs result.alpha.  See the two branches below.
+    #
+    # The raw 'Alpha'/'Beta' channels in result.air_on are untouched.
+    a_off = float(getattr(geo, 'alpha_offset', 0.0) or 0.0)
+    b_off = float(getattr(geo, 'beta_offset', 0.0) or 0.0)
+    alpha_raw = np.asarray(raw_on.get('Alpha', np.array([0.0])),
+                           dtype=float)
+    beta_raw = np.asarray(raw_on.get('Beta', np.array([0.0])),
+                          dtype=float)
+    result.alpha = alpha_raw + a_off
+    result.beta = beta_raw + b_off
     result.time = raw_on.get('Time', np.array([0.0]))
 
     # Speed setting from AirON (first-class sweep dimension). The Speed
@@ -144,34 +180,95 @@ def reduce_single_point(raw_on: Dict[str, np.ndarray],
     result.speed_unit = raw_on.get('speed_unit')
     result.speed_setpoints = raw_on.get('speed_setpoints')
 
-    # Get position data from AirOFF (may differ from AirON if using a single tare)
-    alpha_off = raw_off.get('Alpha', np.array([0.0]))
-    beta_off = raw_off.get('Beta', np.array([0.0]))
+    # Commanded attitude markers (injected from the run's own record).
+    # Kept separate from result.alpha/beta, which stay the MEASURED
+    # attitude the model actually flew at.
+    for marker, attr in (('alpha_nominal', 'alpha_nominal'),
+                         ('beta_nominal', 'beta_nominal')):
+        value = raw_on.get(marker)
+        if value is not None:
+            try:
+                setattr(result, attr, float(value))
+            except (TypeError, ValueError):
+                pass
+
+    # Position data from AirOFF (may differ from AirON if using a single
+    # tare), in the same two forms.  The sting is just as bent with the
+    # wind off, so the tare attitude carries the same offsets.
+    alpha_off_raw = np.asarray(raw_off.get('Alpha', np.array([0.0])),
+                               dtype=float)
+    beta_off_raw = np.asarray(raw_off.get('Beta', np.array([0.0])),
+                              dtype=float)
+    alpha_off = alpha_off_raw + a_off
+    beta_off = beta_off_raw + b_off
 
     if is_external_balance_data(raw_on):
-        # External (ATE) balance: channels are already resolved
-        # wind-axis loads in engineering units — skip the
-        # volts->forces calibration and BRF->WRF rotation entirely and
-        # pass the loads straight through. BRF forces are left empty
-        # (there is no body-axis bridge data to reduce).
+        # External (ATE) balance: the six channels are already resolved
+        # loads in engineering units, so the volts->forces calibration
+        # is skipped entirely and BRF forces stay empty (there is no
+        # body-axis bridge data to reduce).
         #
-        # Units: the Freestream ATE streams N / N*m while this chain
-        # works in lb / in-lb (deprecated/scripts/calc_coeffs.m
-        # 'External': Units = {'lb','lb','lb','in-lb','in-lb','in-lb'}),
-        # so SI-marked loads are converted first; unmarked dicts pass
-        # through untouched (legacy lb / in-lb behavior).
-        result.wrf_on = wrf_from_resolved_loads(
-            external_loads_to_ips(raw_on))
-        result.wrf_off = wrf_from_resolved_loads(
-            external_loads_to_ips(raw_off),
+        # Units first: the chain works in lb / in-lb
+        # (deprecated/scripts/calc_coeffs.m 'External'), and the OGI's
+        # unit setting is operator-selectable, so the recorded
+        # load_units marker drives the conversion.
+        #
+        # Then the MOUNT decides how the channels become wind-axis
+        # loads. Full span: straight through. ½ span: the balance yaws
+        # with the model, so the channels are body-fixed and permuted
+        # (see external_balance.resolve_external_wrf). As on the
+        # internal path, air-on and air-off each resolve with their OWN
+        # alpha so a tare taken at a different attitude still subtracts
+        # correctly.
+        #
+        # That rotation uses alpha_RAW, not the corrected incidence: the
+        # balance is bolted to the mount, so the angle between its axes
+        # and the flow is the angle the positioner recorded.  An attitude
+        # offset moves the model on the mount, not the mount, and putting
+        # it into this rotation would swing lift into the drag axis.
+        span = normalize_span_config(raw_on.get('span_config'))
+        on_ips = external_loads_to_ips(raw_on)
+        off_ips = external_loads_to_ips(raw_off)
+        result.wrf_on = resolve_external_wrf(
+            on_ips, alpha_deg=alpha_raw, span_config=span)
+        result.wrf_off = resolve_external_wrf(
+            off_ips, alpha_deg=alpha_off_raw, span_config=span,
             n_samples=len(result.wrf_on.Lift))
+
+        # The balance's OWN six channels, before the mount-dependent
+        # resolution, in the same slot as an internal balance's elements
+        # (Fx, Fy, Fz, Mx, My, Mz -- see transforms.element_channels).
+        # This is the external analogue of the bridge elements: without
+        # it the element slots stay empty and an export writes six
+        # columns of zeros. The BRF force/moment attributes stay empty:
+        # there is no body-axis reduction on this path.
+        result.brf_on.elements = build_load_matrix_from_channels(on_ips)
+        result.brf_off.elements = build_load_matrix_from_channels(off_ips)
+
+        # MRC shift. The MATLAB never re-referenced external loads
+        # (equivalent to mshift == 0, which this is a no-op for), but
+        # Freestream now offers an MRC and its live report applies one,
+        # so the offline reduction has to agree with it.
+        # Mount-fixed frame again, so alpha_raw again.
+        result.wrf_on = transfer_external_loads_to_mrc(
+            result.wrf_on, alpha_raw, beta_raw, geo.mshift,
+            span_config=span)
+        result.wrf_off = transfer_external_loads_to_mrc(
+            result.wrf_off, alpha_off_raw, beta_off_raw, geo.mshift,
+            span_config=span)
     else:
         # Calculate BRF forces for air-on and air-off
         result.brf_on = calc_brf_forces(raw_on, cal, geo, balance_config)
         result.brf_off = calc_brf_forces(raw_off, cal, geo, balance_config)
 
         # Calculate WRF forces - CRITICAL: each uses its OWN alpha/beta!
-        # This is essential for proper tare subtraction when tare is at different angle
+        # This is essential for proper tare subtraction when tare is at
+        # different angle.
+        #
+        # The corrected incidence is right here: an internal balance sits
+        # inside the model and bends with it, so its body axes ARE the
+        # model's and the body-to-wind rotation is by the angle the model
+        # actually flies at.
         result.wrf_on = calc_wrf_forces(result.brf_on, result.alpha, result.beta)
         result.wrf_off = calc_wrf_forces(result.brf_off, alpha_off, beta_off)
 
@@ -312,9 +409,28 @@ def reduce_steady_state(reduced_data: List[ReducedDataPoint]) -> SteadyStateData
     CPitch_std = np.array([np.std(rd.coeffs.CPitch) for rd in reduced_data])
     CYaw_std = np.array([np.std(rd.coeffs.CYaw) for rd in reduced_data])
 
-    # Round alpha and beta for sorting
-    alpha_int = np.round(alphas * 2) / 2
-    beta_int = np.round(betas * 2) / 2
+    # Sort/group keys: the COMMANDED alpha and beta where the run
+    # recorded them, else the measured value rounded to the nearest half
+    # degree (the historical behavior).  Grouping on the raw measured
+    # attitude fragments a sweep: a commanded 4.0 that records as 3.94 on
+    # one speed step and 3.96 on the next is ONE angle, but rounds to two.
+    alpha_nom = np.array([
+        rd.alpha_nominal if getattr(rd, 'alpha_nominal', None) is not None
+        else np.nan for rd in reduced_data], dtype=float)
+    beta_nom = np.array([
+        rd.beta_nominal if getattr(rd, 'beta_nominal', None) is not None
+        else np.nan for rd in reduced_data], dtype=float)
+    # Each axis stands on its own: a pure alpha sweep records a
+    # commanded alpha and nothing for beta, and that alpha is still a
+    # perfectly good key.  A PARTIAL record is refused though - one point
+    # missing its command would silently group under a fallback value.
+    have_alpha_nom = not np.isnan(alpha_nom).any()
+    have_beta_nom = not np.isnan(beta_nom).any()
+
+    alpha_int = np.where(np.isnan(alpha_nom), np.round(alphas * 2) / 2,
+                         alpha_nom)
+    beta_int = np.where(np.isnan(beta_nom), np.round(betas * 2) / 2,
+                        beta_nom)
     # NaN speeds (points with no marker) collapse to 0.0 for ordering
     speed_sort = np.where(np.isnan(speeds), 0.0, speeds)
 
@@ -354,6 +470,10 @@ def reduce_steady_state(reduced_data: List[ReducedDataPoint]) -> SteadyStateData
         ss.alphas = alphas[sort_idx].reshape(n_alpha, n_beta)
         ss.betas = betas[sort_idx].reshape(n_alpha, n_beta)
         ss.speeds = speeds[sort_idx].reshape(n_alpha, n_beta)
+        if have_alpha_nom:
+            ss.alpha_nominal = alpha_nom[sort_idx].reshape(n_alpha, n_beta)
+        if have_beta_nom:
+            ss.beta_nominal = beta_nom[sort_idx].reshape(n_alpha, n_beta)
         ss.Cl = Cl[sort_idx].reshape(n_alpha, n_beta)
         ss.Cd = Cd[sort_idx].reshape(n_alpha, n_beta)
         ss.Cs = Cs[sort_idx].reshape(n_alpha, n_beta)
@@ -371,6 +491,10 @@ def reduce_steady_state(reduced_data: List[ReducedDataPoint]) -> SteadyStateData
         ss.alphas = alphas[sort_idx]
         ss.betas = betas[sort_idx]
         ss.speeds = speeds[sort_idx]
+        if have_alpha_nom:
+            ss.alpha_nominal = alpha_nom[sort_idx]
+        if have_beta_nom:
+            ss.beta_nominal = beta_nom[sort_idx]
         ss.Cl = Cl[sort_idx]
         ss.Cd = Cd[sort_idx]
         ss.Cs = Cs[sort_idx]

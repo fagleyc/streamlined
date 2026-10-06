@@ -158,6 +158,25 @@ class TestCase:
     run_numbers: np.ndarray = field(default_factory=lambda: np.array([]))
     sweep_dirs: np.ndarray = field(default_factory=lambda: np.array([]))
 
+    # Per-point COMMANDED alpha/beta, same shape and point order as
+    # self.alphas.  These are the grouping keys: self.alphas/self.betas
+    # hold the MEASURED attitude, which jitters about the commanded one
+    # and fragments a sweep when rounded (see self.point_alphas).  Empty
+    # when the runs carried no commanded record.
+    alpha_nominal: np.ndarray = field(default_factory=lambda: np.array([]))
+    beta_nominal: np.ndarray = field(default_factory=lambda: np.array([]))
+
+    # Unit the speed SETPOINTS are expressed in: 'mach', 'hz', 'ft/s',
+    # 'm/s' or 'rpm'.  Only a 'mach' setpoint can be reported as a Mach
+    # number; the others identify a step but say nothing about Mach.
+    speed_unit: str = ''
+
+    # Per-point tunnel-speed SETPOINT (the speed commanded for that
+    # point), same shape and point order as self.alphas.  This, not the
+    # measured Mach, is what identifies which step of a speed sweep a
+    # point belongs to.  Empty when the runs recorded no setpoint.
+    speeds: np.ndarray = field(default_factory=lambda: np.array([]))
+
     # Per-point tunnel conditions arrays
     machs: np.ndarray = field(default_factory=lambda: np.array([]))
     reynolds: np.ndarray = field(default_factory=lambda: np.array([]))
@@ -198,6 +217,17 @@ class TestCase:
     yaw_moments: np.ndarray = field(default_factory=lambda: np.array([]))
 
     # Balance element forces (stored in internal IPS units: lbf)
+    #: Which balance produced this case: 'external' (the ATE) or
+    #: 'internal' (a sting balance), and for an internal one which
+    #: channel set its calibration was fitted for. Together these name
+    #: the six element slots below - see transforms.element_channels.
+    balance_type: str = ''
+    balance_config: str = 'Force'
+
+    #: The six element channels, one array per SLOT (columns 0..5 of
+    #: BRFForces.elements). The slot names are historical - what each
+    #: slot actually holds depends on the balance, so never label them
+    #: from these attribute names.
     elem_N1: np.ndarray = field(default_factory=lambda: np.array([]))
     elem_N2: np.ndarray = field(default_factory=lambda: np.array([]))
     elem_Y1: np.ndarray = field(default_factory=lambda: np.array([]))
@@ -229,6 +259,105 @@ class TestCase:
         return (len(self.tunnel_conditions.Q) > 0 or
                 self.mach_number is not None or
                 len(self.machs) > 0)
+
+    def _grouping_attitude(self, nominal: np.ndarray,
+                           measured: np.ndarray) -> np.ndarray:
+        """One attitude array to group and filter by, shaped like alphas.
+
+        Prefers the COMMANDED angle the run recorded.  The positioner
+        does not land exactly on it - a commanded 4.0 deg records as
+        3.93 on one speed step and 3.96 on the next - so grouping on the
+        measured value splits one angle of the sweep into two traces,
+        two filter entries and two export columns.  The commanded value
+        is one number for the whole set of points taken there.
+
+        Falls back to the measured attitude when no commanded record
+        exists (legacy runs), which is the historical behavior.
+        """
+        nominal = np.asarray(nominal, dtype=float)
+        measured = np.asarray(measured, dtype=float)
+        if nominal.size != measured.size or nominal.size == 0:
+            return measured
+        if np.isnan(nominal).any():
+            return measured
+        return nominal.reshape(measured.shape)
+
+    @property
+    def element_channels(self) -> tuple:
+        """The six element channels this case's balance produces.
+
+        A tuple of ``(name, unit_kind)`` pairs aligned with the elem_*
+        slots, so a table or an export labels them for the balance that
+        actually recorded them.
+        """
+        try:
+            from utils.windtunnel.transforms import element_channels
+        except Exception:                                  # noqa: BLE001
+            return (('N1', 'force'), ('N2', 'force'), ('Y1', 'force'),
+                    ('Y2', 'force'), ('Axial', 'force'), ('Roll', 'force'))
+        return element_channels(self.balance_type, self.balance_config)
+
+    @property
+    def point_alphas(self) -> np.ndarray:
+        """Per-point alpha to GROUP and FILTER by: the COMMANDED angle."""
+        return self._grouping_attitude(self.alpha_nominal, self.alphas)
+
+    @property
+    def point_betas(self) -> np.ndarray:
+        """Per-point beta to GROUP and FILTER by: the COMMANDED angle."""
+        return self._grouping_attitude(self.beta_nominal, self.betas)
+
+    @property
+    def point_machs(self) -> np.ndarray:
+        """Per-point Mach to GROUP and FILTER by: the COMMANDED Mach.
+
+        A speed step is identified by the setpoint that was commanded,
+        not by the Mach the tunnel actually held.  Within a single step
+        the measured Mach drifts from point to point (a sweep commanded
+        at M0.05 can measure 0.044 to 0.052), so grouping on the raw
+        measured value shatters one alpha sweep into a dozen one-point
+        "curves".  Every point of a step therefore reports its step's
+        MEAN measured Mach here: the grouping is exact (it keys on the
+        setpoint) while the label stays physical (it reports what the
+        tunnel actually ran).
+
+        The mean is rounded to 3 decimals so it compares equal to the
+        value the Mach filter offers.  Two steps whose mean Machs agree
+        to within 0.001 therefore merge, which is intended: at that
+        separation they are the same tunnel condition.
+
+        Falls back to the raw per-point Mach when no setpoints were
+        recorded, and is empty when neither is available.
+        """
+        machs = np.asarray(self.machs, dtype=float).ravel()
+        n_pts = int(np.asarray(self.alphas).size)
+        if machs.size == 0 or machs.size != n_pts:
+            return machs
+        speeds = np.asarray(self.speeds, dtype=float).ravel()
+        if speeds.size != n_pts:
+            return machs
+
+        # A Mach setpoint is reported as-is, exactly as point_alphas
+        # reports the commanded angle.  Two runs commanded to the same
+        # Mach that held it a thousandth apart are ONE condition and have
+        # to offer one filter entry, which an average of what each
+        # measured cannot guarantee.  A run commanded in Hz or RPM has no
+        # Mach setpoint to report, so it falls through to labelling each
+        # step with its own mean measured Mach - still one per step.
+        if str(self.speed_unit).strip().lower() == 'mach':
+            commanded = np.round(speeds, 3)
+            # A point with no setpoint keeps its measured value rather
+            # than becoming NaN and dropping out of every group.
+            return np.where(np.isnan(speeds), machs, commanded)
+
+        grouped = machs.copy()
+        for setpoint in np.unique(speeds[~np.isnan(speeds)]):
+            in_step = speeds == setpoint
+            step_machs = machs[in_step]
+            if step_machs.size and np.any(np.isfinite(step_machs)):
+                grouped[in_step] = round(
+                    float(np.nanmean(step_machs)), 3)
+        return grouped
 
     @property
     def description(self) -> str:
@@ -520,27 +649,39 @@ class CaseCollection:
 
     @property
     def all_beta_values(self) -> List[float]:
-        """Get all unique beta values across cases (rounded to 1 decimal)."""
+        """Unique beta values across cases, as COMMANDED (1 decimal).
+
+        Enumerated from case.point_betas, so a sweep offers one entry per
+        commanded angle rather than one per measured reading (see
+        TestCase.point_betas).
+        """
         betas = set()
         for case in self:
             if case.has_data:
-                if case.betas.ndim == 2:
-                    betas.update(round(float(v), 1) for v in np.mean(case.betas, axis=0))
+                keys = case.point_betas
+                if keys.ndim == 2:
+                    betas.update(round(float(v), 1)
+                                 for v in np.mean(keys, axis=0))
                 else:
-                    betas.update(round(float(v), 1) for v in case.betas.flatten())
+                    betas.update(round(float(v), 1) for v in keys.flatten())
         return sorted(betas)
 
     @property
     def all_alpha_values(self) -> List[float]:
-        """Get all unique alpha values across cases (rounded to 1 decimal)."""
+        """Unique alpha values across cases, as COMMANDED (1 decimal).
+
+        Enumerated from case.point_alphas (see TestCase.point_alphas).
+        """
         alphas = set()
         for case in self:
             if case.has_data:
-                if case.alphas.ndim == 2:
+                keys = case.point_alphas
+                if keys.ndim == 2:
                     # 2D: each row is one alpha; take row mean
-                    alphas.update(round(float(v), 1) for v in np.mean(case.alphas, axis=1))
+                    alphas.update(round(float(v), 1)
+                                  for v in np.mean(keys, axis=1))
                 else:
-                    alphas.update(round(float(v), 1) for v in case.alphas.flatten())
+                    alphas.update(round(float(v), 1) for v in keys.flatten())
         return sorted(alphas)
 
     @property
@@ -562,9 +703,14 @@ class CaseCollection:
         for case in self:
             if not case.has_data:
                 continue
-            if len(case.machs) > 0:
-                for m in np.asarray(case.machs).flatten():
-                    machs.add(round(float(m), 3))
+            # point_machs collapses each speed STEP to its mean measured
+            # Mach, so a 3-speed sweep offers 3 entries and not one per
+            # acquired point (see TestCase.point_machs).
+            step_machs = case.point_machs
+            if step_machs.size > 0:
+                for m in step_machs:
+                    if np.isfinite(m):
+                        machs.add(round(float(m), 3))
             elif case.mach_number is not None:
                 machs.add(round(case.mach_number, 3))
         return sorted(machs)
