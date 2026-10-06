@@ -10,7 +10,7 @@ from typing import Dict, List, Any, Optional, Tuple
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .calibration import BalanceCalibration
+from .calibration import BalanceCalibration, resolve_balance_config
 from .transforms import (
     Geometry, BRFForces, WRFForces,
     calc_brf_forces, calc_wrf_forces,
@@ -338,6 +338,15 @@ def reduce_raw(raw_data_list: List[Dict[str, Dict[str, np.ndarray]]],
         List of ReducedDataPoint objects
     """
     results = []
+
+    # The calibration's declared balance type wins over the requested
+    # configuration (see resolve_balance_config) - every reduction path
+    # (GUI, reprocess, Freestream Process & Report) goes through here.
+    if cal is not None:
+        balance_config, note = resolve_balance_config(cal, balance_config)
+        if note:
+            import warnings
+            warnings.warn(note)
 
     for raw in raw_data_list:
         air_on = raw.get('AirOn', raw.get('AirON', {}))

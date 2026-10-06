@@ -465,3 +465,50 @@ def balance_cal_from_matrix(matrix, cal_type: str = 'Linear',
     cal.description = BalanceDescription(serial_number=str(serial or ''))
     cal.file = '<injected: run-file balance cal matrix>'
     return cal
+
+
+def balance_config_from_type(balance_type: str) -> Optional[str]:
+    """'Force' or 'Moment' from a .vol 'Balance Type' declaration.
+
+    The declaration says what the calibrated elements ARE:
+    '5 Force/1 Moment' (N1, N2, Y1, Y2, Axial forces + a roll moment) is a
+    force balance; '5 Moment/1 Force', '1-Force / 5-Moment' and
+    '1 Force/5 Moment' are moment balances. Returns None when the text
+    declares neither (an empty field, an injected matrix).
+    """
+    text = str(balance_type or '')
+    forces = re.search(r'(\d+)\s*-?\s*Force', text, re.IGNORECASE)
+    moments = re.search(r'(\d+)\s*-?\s*Moment', text, re.IGNORECASE)
+    n_force = int(forces.group(1)) if forces else 0
+    n_moment = int(moments.group(1)) if moments else 0
+    if n_force > n_moment:
+        return 'Force'
+    if n_moment > n_force:
+        return 'Moment'
+    return None
+
+
+def resolve_balance_config(cal: Optional['BalanceCalibration'],
+                           requested: Optional[str]
+                           ) -> Tuple[str, Optional[str]]:
+    """The balance configuration to reduce with, and a note on a conflict.
+
+    The .vol's declared balance type is authoritative: it defines what the
+    six calibrated elements are, so reducing a force balance with the
+    moment equations (Fz = (e1 - e3)/(x1 + x2)) is meaningless - it read
+    the F16 check model's CL about 2.75x low when Freestream recorded
+    'Moment' for the 100 lb force balance (2026-10-06). The requested
+    configuration (session setting, run metadata) is used only when the
+    calibration declares nothing.
+    """
+    requested = requested if requested in ('Force', 'Moment') else 'Force'
+    declared = balance_config_from_type(
+        getattr(getattr(cal, 'description', None), 'balance_type', ''))
+    if declared is None or declared == requested:
+        return requested, None
+    serial = getattr(getattr(cal, 'description', None), 'serial_number', '')
+    return declared, (
+        f"balance configuration '{requested}' overridden by the "
+        f"calibration: {serial or 'the balance'} is declared "
+        f"'{cal.description.balance_type}', so it is reduced as a "
+        f"{declared} balance.")

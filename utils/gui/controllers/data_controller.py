@@ -24,7 +24,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent))
 
 try:
     from utils.windtunnel import DAQ
-    from utils.windtunnel.calibration import read_vol_file, read_pcf_file, calc_coeffs
+    from utils.windtunnel.calibration import (
+        read_vol_file, read_pcf_file, calc_coeffs, resolve_balance_config)
     from utils.windtunnel.data_io import (
         parse_tdms_filename, group_files_by_configuration,
         extract_alpha_beta_from_filename, read_run_file,
@@ -552,6 +553,16 @@ class ProcessingWorker(QRunnable):
             notes: List[str] = []
             synthesized: List[Tuple[float, float, float]] = []
             donor_totals = None          # (P0 psia, T0 degC, source name)
+
+            # The calibration's declared balance type decides Force vs
+            # Moment (reduce_raw applies the same rule); record it on the
+            # DAQ so the case reports what was actually used.
+            if daq.cal:
+                resolved, conflict = resolve_balance_config(
+                    daq.cal, daq.fac.balance_config)
+                daq.fac.balance_config = resolved
+                if conflict:
+                    notes.append(conflict)
 
             for i, on_info in enumerate(on_sorted):
                 raw_entry = {'AirOn': {}, 'AirOff': {}}

@@ -54,8 +54,10 @@ pytestmark = pytest.mark.skipif(
     not all((DATA / sub).is_dir() for sub in SETS.values()),
     reason="F16 check-model data not present (data/F16_CheckModel)")
 
-# The reduction setup recorded with the October set (manifest.json):
-# moment-configuration balance, cubic calibration, F16 reference geometry.
+# The reduction setup recorded with the October set (manifest.json) - its
+# "Moment" layout is WRONG for this force balance and is deliberately kept
+# here: the .vol declaration must override it (resolve_balance_config).
+# Cubic calibration, F16 reference geometry.
 GEOMETRY = dict(mac=2.86, ref_area=18.75, span=1.0, mrc=[1.6, 0.0, 0.0],
                 units="IPS", output_units="IPS")
 SETTINGS = dict(cal_type="Cubic", facility="SWT", output_units="IPS",
@@ -102,6 +104,11 @@ def _snapshot(case):
     return out
 
 
+def _problems(errors):
+    """Worker messages other than the informational Reduction Notes."""
+    return [(t, m) for t, m in errors if t != "Reduction Notes"]
+
+
 @pytest.fixture(scope="module")
 def reduced():
     out = {}
@@ -130,7 +137,7 @@ def _polar(case, step, beta=0.0):
 class TestLoading:
     def test_run01_is_one_case_at_one_mach(self, reduced):
         cases, errors = reduced["Run01"]
-        assert not errors and len(cases) == 1
+        assert not _problems(errors) and len(cases) == 1
         case = cases[0]
         assert np.asarray(case.alphas).size == 14
         # no speed token: measured Machs cluster to ONE filter entry
@@ -166,7 +173,7 @@ class TestLoading:
 
     def test_october_loads_with_its_run_local_vol(self, reduced):
         cases, errors = reduced["Oct26"]
-        assert len(cases) == 1 and not errors
+        assert len(cases) == 1 and not _problems(errors)
         assert np.unique(np.asarray(cases[0].point_machs, float)).tolist() \
             == [pytest.approx(0.3)]
 
@@ -189,7 +196,7 @@ class TestLoading:
 class TestCrossDatasetConsistency:
     """Same model, same balance: every set's beta=0 polar must agree."""
 
-    ALPHAS = (-4.0, 0.0, 4.0, 8.0, 12.0)
+    ALPHAS = (-4.0, 0.0, 4.0, 8.0, 12.0, 16.0)
 
     def _curves(self, reduced):
         may = reduced["May26"][0][0]
@@ -200,26 +207,26 @@ class TestCrossDatasetConsistency:
             "Oct M0.3": _polar(reduced["Oct26"][0][0], 0.3),
         }
 
-    def test_the_labview_era_sets_agree_tightly(self, reduced):
-        """Run01, May M0.2 (rebuilt q) and May M0.3 agree to < 0.01 CL -
+    def test_the_labview_era_sets_agree(self, reduced):
+        """Run01, May M0.2 (rebuilt q) and May M0.3 agree to < 0.04 CL -
         which is also what validates reading 'M2' as Mach 0.2."""
         curves = self._curves(reduced)
         legacy = np.vstack([np.interp(self.ALPHAS, *curves[k]) for k in
                             ("Run01 M0.29", "May M0.2", "May M0.3")])
         spread = legacy.max(axis=0) - legacy.min(axis=0)
-        assert np.all(spread < 0.01), dict(zip(self.ALPHAS, spread))
+        assert np.all(spread < 0.04), dict(zip(self.ALPHAS, spread))
 
     def test_october_stays_near_the_labview_era_polar(self, reduced):
         """KNOWN OFFSET (2026-10-06): the Freestream-recorded October set
-        reads CL about +0.01 at alpha 0 growing to +0.025 at alpha 12
-        (~7 % more lift-curve slope) at the same Mach - a force, not a q,
-        difference. Bounded here so a gross error (a doubled q, a swapped
+        reads CL about +0.05 above the LabVIEW-era sets at the same Mach
+        (+0.04 at alpha 0 .. +0.07 at alpha 16) - a force, not a q,
+        difference. Bounded so a gross error (a doubled q, a swapped
         channel) still fails; the golden record pins the exact values."""
         curves = self._curves(reduced)
         legacy = np.mean([np.interp(self.ALPHAS, *curves[k]) for k in
                           ("Run01 M0.29", "May M0.2", "May M0.3")], axis=0)
         oct_ = np.interp(self.ALPHAS, *curves["Oct M0.3"])
-        assert np.all(np.abs(oct_ - legacy) < 0.04), dict(
+        assert np.all(np.abs(oct_ - legacy) < 0.10), dict(
             zip(self.ALPHAS, oct_ - legacy))
 
     def test_lift_curve_slopes_agree(self, reduced):
@@ -228,8 +235,21 @@ class TestCrossDatasetConsistency:
             lin = (a >= -4) & (a <= 8)
             slopes[k] = np.polyfit(a[lin], cl[lin], 1)[0]
         vals = np.array(list(slopes.values()))
-        assert np.all((vals > 0.024) & (vals < 0.029)), slopes
-        assert vals.max() - vals.min() < 0.002, slopes
+        assert np.all((vals > 0.066) & (vals < 0.078)), slopes
+        assert vals.max() - vals.min() < 0.005, slopes
+
+    def test_cl_reaches_the_f16_magnitude(self, reduced):
+        """CL ~1.3 by alpha 20. The 'Moment' layout Freestream recorded
+        for this FORCE balance read every set ~2.75x low (CL 0.48 at 20)."""
+        for k, (a, cl) in self._curves(reduced).items():
+            assert 1.2 < np.interp(20.0, a, cl) < 1.5, k
+
+    def test_the_vol_overrides_the_recorded_moment_layout(self, reduced):
+        for key in SETS:
+            notes = reduced[key][0][0].metadata.get("reduction_notes", [])
+            assert any("overridden by the calibration" in n
+                       for n in notes), key
+            assert reduced[key][0][0].balance_config == "Force"
 
 
 # ── 3. golden numbers ───────────────────────────────────────────────────
