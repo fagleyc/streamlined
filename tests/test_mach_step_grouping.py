@@ -402,3 +402,81 @@ class TestCaseHoldsMach:
         case.mach_number = 0.3
         assert PlotPanel._case_holds_mach(case, 0.3) is True
         assert PlotPanel._case_holds_mach(case, 0.2) is False
+
+
+# ── the May 2026 LabVIEW convention: bare tenths token + run counter ────
+class TestLegacyTenthsMachToken:
+    """'AirOn_F16_100lb_M3_Run_1_Alpha_0.0' = Mach 0.3, one configuration."""
+
+    @pytest.mark.parametrize("name,expected", [
+        ("AirOn_F16_100lb_M3_Run_1_Alpha_0.0_Beta_0.0.tdms", 0.3),
+        ("AirOff_F16_100lb_M2_Run_1_Alpha_-6.0_Beta_5.0.tdms", 0.2),
+        ("AirOn_Wing_M5_run2_Alpha_4.0.tdms", 0.5),
+    ])
+    def test_parsed(self, name, expected):
+        assert extract_mach_from_filename(name) == pytest.approx(expected)
+        assert extract_speed_from_filename(name) == (
+            pytest.approx(expected), 'mach')
+
+    @pytest.mark.parametrize("name", [
+        "Config_M3_Alpha_2.0.tdms",            # no run counter: model no.
+        "AirOn_Wing_M0_Run_2_Alpha_0.0.tdms",  # M0 would make it a tare
+        "AirOn_Wing_M12_Run_2_Alpha_0.0.tdms",  # not a single tenths digit
+    ])
+    def test_rejected(self, name):
+        assert extract_mach_from_filename(name) is None
+
+    def test_both_speeds_share_one_configuration(self):
+        from utils.windtunnel.data_io import (
+            extract_configuration_from_filename as config)
+        assert config("AirOn_F16_100lb_M2_Run_1_Alpha_0.0_Beta_0.0.tdms") \
+            == config("AirOff_F16_100lb_M3_Run_1_Alpha_8.0_Beta_5.0.tdms") \
+            == "F16_100lb_Run_1"
+        assert config("AirOn_DrpPd3_NB1_TF1_R01_M0p25_Sp26_Alpha_-10.0"
+                      ".tdms") == "DrpPd3_NB1_TF1_R01_Sp26"
+        assert config("Config_M3_Alpha_2.0.tdms") == "Config_M3"
+
+
+class TestSingleSpeedWithoutSetpoints:
+    """Legacy runs with no speed token: one tunnel speed, one entry."""
+
+    def _legacy(self, machs):
+        case = _case("legacy", [0.0], [np.nan], n_alpha=len(machs))
+        case.machs = np.array(machs, dtype=float)
+        case.speeds = np.array([])
+        return case
+
+    def test_f16_run01_spread_is_one_entry(self):
+        # the measured Machs of the F16 Run01 polar (one M0.29 condition)
+        case = self._legacy([0.286, 0.288, 0.289, 0.291, 0.292, 0.294,
+                             0.293, 0.290])
+        assert np.unique(case.point_machs).tolist() == [
+            pytest.approx(0.29, abs=1e-3)]
+
+    def test_two_speeds_are_not_merged(self):
+        case = self._legacy([0.198, 0.201, 0.296, 0.301])
+        np.testing.assert_allclose(case.point_machs, case.machs)
+
+    def test_a_tunnel_off_point_keeps_the_raw_values(self):
+        case = self._legacy([0.29, 0.291, 0.292, 0.044])
+        np.testing.assert_allclose(case.point_machs, case.machs)
+
+    def test_nan_stays_nan(self):
+        case = self._legacy([0.29, np.nan, 0.291])
+        out = case.point_machs
+        assert np.isnan(out[1]) and out[0] == out[2]
+
+
+class TestCommandedTunnelChannels:
+    """Rebuilt Pdiff/Ptot/Temp reduce back to exactly the commanded Mach."""
+
+    @pytest.mark.parametrize("mach", [0.1, 0.2, 0.3, 0.45])
+    def test_round_trip(self, mach):
+        from utils.windtunnel.coefficients import (
+            calc_tunnel_conditions, commanded_tunnel_channels)
+        ch = commanded_tunnel_channels(20, mach, 11.24, 27.7)
+        tc = calc_tunnel_conditions(ch, {}, facility='SWT')
+        assert np.mean(tc.Mach) == pytest.approx(mach, rel=1e-9)
+        p_static = 11.24 / (1 + 0.2 * mach ** 2) ** 3.5
+        assert np.mean(tc.Q) == pytest.approx(0.7 * p_static * mach ** 2,
+                                              rel=1e-6)

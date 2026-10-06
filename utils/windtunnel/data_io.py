@@ -7,6 +7,7 @@ formats) and exporting processed data.
 """
 
 import json
+import re
 import warnings
 
 import numpy as np
@@ -1802,7 +1803,38 @@ def extract_mach_from_filename(filepath: str) -> Optional[float]:
                        filename)
     if legacy:
         return float('{0}.{1}'.format(legacy.group(1), legacy.group(2)))
+
+    # Legacy LabVIEW convention (May 2026 F16 check runs): a bare
+    # single-digit TENTHS token right before the run counter, as in
+    # 'AirOn_F16_100lb_M3_Run_1_Alpha_0.0' = Mach 0.3.  Only that exact
+    # position is accepted - a bare 'M3' anywhere else is still far
+    # likelier to be a model number - and M0 is never read (Mach 0
+    # would turn the run into a tare).
+    tenths = _LEGACY_TENTHS_MACH.search(filename)
+    if tenths:
+        return int(tenths.group(1)) / 10.0
     return None
+
+
+#: 'M3' immediately followed by the '_Run_<n>' counter (see
+#: extract_mach_from_filename); shared with the configuration stripper.
+_LEGACY_TENTHS_MACH = re.compile(r'(?:^|_)M([1-9])(?=_[Rr]un_?\d+(?:_|$))')
+_LEGACY_DECIMAL_MACH = re.compile(r'(?:^|[_\s-])M\d+[p.]\d+(?=$|[_\s-])')
+
+
+def _strip_legacy_speed_tokens(configuration: str) -> str:
+    """Drop a legacy Mach token from a filename-derived configuration name.
+
+    The legacy TDMS names carry the commanded Mach INSIDE the
+    configuration slot ('F16_100lb_M3_Run_1', 'DrpPd3_..._M0p25_Sp26'), so
+    each speed of one model became its own configuration.  The speed is a
+    sweep dimension (read by extract_mach_from_filename), not part of the
+    model's identity: stripping it puts every speed of a configuration in
+    ONE case, grouped by commanded Mach like a Freestream speed sweep.
+    """
+    stripped = _LEGACY_DECIMAL_MACH.sub('', configuration)
+    stripped = _LEGACY_TENTHS_MACH.sub('', stripped).strip('_ -')
+    return stripped or configuration
 
 
 def extract_alpha_beta_from_filename(filepath: str) -> Tuple[float, float]:
@@ -1866,7 +1898,7 @@ def extract_configuration_from_filename(filepath: str) -> str:
     )
 
     if config_match:
-        return config_match.group(1)
+        return _strip_legacy_speed_tokens(config_match.group(1))
 
     # Fallback: try to extract without the air state prefix
     alt_match = re.match(r'^(.+?)_Alpha_', filename, re.IGNORECASE)
@@ -1879,6 +1911,7 @@ def extract_configuration_from_filename(filepath: str) -> str:
         # to keep all runs of a directory grouped together.
         if re.fullmatch(r'run_?\d+', configuration, re.IGNORECASE):
             return 'Unknown'
+        configuration = _strip_legacy_speed_tokens(configuration)
         return configuration if configuration else 'Unknown'
 
     return 'Unknown'

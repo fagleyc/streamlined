@@ -307,6 +307,10 @@ class TestCase:
         """Per-point beta to GROUP and FILTER by: the COMMANDED angle."""
         return self._grouping_attitude(self.beta_nominal, self.betas)
 
+    #: no setpoints: a case whose measured Machs span at most this
+    #: fraction of their mean ran at ONE tunnel speed (F16 Run01: 2.8 %)
+    SINGLE_SPEED_SPREAD = 0.10
+
     @property
     def point_machs(self) -> np.ndarray:
         """Per-point Mach to GROUP and FILTER by: the COMMANDED Mach.
@@ -326,16 +330,24 @@ class TestCase:
         to within 0.001 therefore merge, which is intended: at that
         separation they are the same tunnel condition.
 
-        Falls back to the raw per-point Mach when no setpoints were
-        recorded, and is empty when neither is available.
+        With no setpoints at all (legacy runs named without a speed
+        token, e.g. 'AirOn_F16check_no_beta_Alpha_2.0') the raw measured
+        Mach is used - EXCEPT when every point lies within
+        SINGLE_SPEED_SPREAD of the mean: that is one tunnel speed, and
+        it reports its mean (one filter entry instead of one per point:
+        0.286, 0.288, ... for the F16 Run01 M0.29 polar). Wider spreads
+        are left alone, because without a setpoint a low-speed sweep's
+        steps (0.031 vs 0.038) cannot be told from drift within a step.
+
+        Empty when no Mach is available.
         """
         machs = np.asarray(self.machs, dtype=float).ravel()
         n_pts = int(np.asarray(self.alphas).size)
         if machs.size == 0 or machs.size != n_pts:
             return machs
         speeds = np.asarray(self.speeds, dtype=float).ravel()
-        if speeds.size != n_pts:
-            return machs
+        if speeds.size != n_pts or not np.any(np.isfinite(speeds)):
+            return self._single_speed_or_raw(machs)
 
         # A Mach setpoint is reported as-is, exactly as point_alphas
         # reports the commanded angle.  Two runs commanded to the same
@@ -358,6 +370,16 @@ class TestCase:
                 grouped[in_step] = round(
                     float(np.nanmean(step_machs)), 3)
         return grouped
+
+    def _single_speed_or_raw(self, machs: np.ndarray) -> np.ndarray:
+        """No-setpoint fallback (see point_machs)."""
+        finite = machs[np.isfinite(machs)]
+        if (finite.size and finite.mean() > 0
+                and np.ptp(finite) <= self.SINGLE_SPEED_SPREAD
+                * finite.mean()):
+            return np.where(np.isfinite(machs),
+                            round(float(finite.mean()), 3), machs)
+        return machs
 
     @property
     def description(self) -> str:

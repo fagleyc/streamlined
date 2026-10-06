@@ -34,6 +34,8 @@ try:
         run_balance_type, run_span_config
     )
     from utils.windtunnel.transforms import is_external_balance_data
+    from utils.windtunnel.coefficients import (
+        commanded_tunnel_channels, has_tunnel_channels, tunnel_totals)
     BACKEND_AVAILABLE = True
 except ImportError as e:
     BACKEND_AVAILABLE = False
@@ -283,6 +285,7 @@ class ProcessingWorker(QRunnable):
 
             # Second pass: process each configuration
             processed_count = 0
+            quality_notes: List[str] = []
             dir_names = []
             failed_configs = []
 
@@ -305,6 +308,9 @@ class ProcessingWorker(QRunnable):
                         if case:
                             self.signals.case_ready.emit(case)
                             processed_count += 1
+                            for note in case.metadata.get(
+                                    'reduction_notes', []):
+                                quality_notes.append(f"{case.name}: {note}")
                     except Exception as e:
                         # Log error but continue processing other configurations
                         traceback.print_exc()
@@ -315,6 +321,16 @@ class ProcessingWorker(QRunnable):
 
             # Final progress update
             self.signals.progress.emit(total_expected, total_expected)
+
+            # Data-quality notes (tunnel off, positioner off its point,
+            # tunnel channels rebuilt from the commanded Mach) are shown,
+            # never silently applied.
+            if quality_notes:
+                self.signals.error.emit(
+                    "Reduction Notes",
+                    "The data loaded, with these notes:\n\n"
+                    + "\n\n".join(quality_notes[:8])
+                    + ("\n\n..." if len(quality_notes) > 8 else ""))
 
             # Report failures so a partial (or empty) load is never
             # mistaken for a complete one
@@ -533,6 +549,9 @@ class ProcessingWorker(QRunnable):
                         is not None else 0.0)
             on_sorted = sorted(air_on_files, key=_ab_speed)
             off_sorted = sorted(air_off_files, key=_ab_speed)
+            notes: List[str] = []
+            synthesized: List[Tuple[float, float, float]] = []
+            donor_totals = None          # (P0 psia, T0 degC, source name)
 
             for i, on_info in enumerate(on_sorted):
                 raw_entry = {'AirOn': {}, 'AirOff': {}}
@@ -543,9 +562,34 @@ class ProcessingWorker(QRunnable):
                 copy_balance_markers(raw_on, raw_entry['AirOn'])
                 self._inject_nominal_setpoints(raw_entry['AirOn'], on_info)
 
-                # Find matching AirOff file by alpha/beta
+                # Legacy runs acquired without the DaqBook (May 2026 F16
+                # 'M2' set) carry no Pdiff/Ptot/Temp, so q is unknown. When
+                # the run COMMANDED a Mach, rebuild the tunnel channels
+                # from that Mach and a measured P0/T0 of a sibling run.
+                if not has_tunnel_channels(raw_entry['AirOn']):
+                    if donor_totals is None:
+                        donor_totals = self._tunnel_donor(
+                            on_sorted + off_sorted) or False
+                    mach_cmd = (float(on_info.speed)
+                                if getattr(on_info, 'speed_unit', None)
+                                == 'mach' and on_info.speed else None)
+                    if mach_cmd and donor_totals:
+                        p0, t0, _src = donor_totals
+                        raw_entry['AirOn'].update(commanded_tunnel_channels(
+                            len(raw_on.time), mach_cmd, p0, t0))
+                        synthesized.append(
+                            (on_info.alpha, on_info.beta, mach_cmd))
+
+                # Find the matching AirOff (tare) by alpha/beta, preferring
+                # one from the SAME speed step: a legacy multi-speed folder
+                # (M2 + M3) has a tare at every angle for each session, and
+                # the tare drifts between sessions.
                 matched = False
                 if off_sorted:
+                    on_speed = getattr(on_info, 'speed', None)
+                    off_sorted = sorted(
+                        off_sorted,
+                        key=lambda o: (getattr(o, 'speed', None) != on_speed))
                     for off_info in off_sorted:
                         if (np.isclose(on_info.alpha, off_info.alpha, atol=0.5) and
                                 np.isclose(on_info.beta, off_info.beta, atol=0.5)):
@@ -573,6 +617,17 @@ class ProcessingWorker(QRunnable):
             if daq.cal or not needs_cal:
                 daq.reduce_datasets()
                 daq.reduce_steady_state()
+
+                if synthesized:
+                    p0, t0, src = donor_totals
+                    machs = sorted({m for _a, _b, m in synthesized})
+                    notes.append(
+                        f"{len(synthesized)} point(s) recorded no tunnel "
+                        f"channels (Pdiff/Ptot/Temp): reduced at the "
+                        f"COMMANDED Mach {', '.join(f'{m:g}' for m in machs)}"
+                        f" with P0 = {p0:.3f} psia, T0 = {t0:.1f} degC "
+                        f"from {src}. q is exact for that Mach and P0; "
+                        f"velocity/Re use the borrowed T0.")
 
                 # Create TestCase from steady-state results
                 case = TestCase(
@@ -604,6 +659,11 @@ class ProcessingWorker(QRunnable):
                 self._attach_point_metadata(case, on_sorted, ss)
                 attach_speed_setpoints(case, ss)
                 attach_nominal_attitude(case, ss)
+                notes.extend(self._tunnel_off_points(daq.red, on_sorted))
+                if notes:
+                    case.metadata['reduction_notes'] = list(notes)
+                    for note in notes:
+                        print(f"[{case_name}] {note}")
 
                 # Store DAQ reference for later use
                 case.daq = daq
@@ -780,6 +840,61 @@ class ProcessingWorker(QRunnable):
             raise RuntimeError(
                 f"Reduction failed for '{case_name}': "
                 f"{type(e).__name__}: {e}") from e
+
+    @staticmethod
+    def _tunnel_donor(file_infos: list):
+        """(P0 psia, T0 degC, file name) from the first run of the set that
+        DID record the tunnel channels — air-off first (tunnel at rest:
+        P0 is the ambient total pressure the running tunnel also holds,
+        within 0.02 % on the May 2026 F16 set), then air-on. None when no
+        run of the set has them."""
+        ordered = sorted(file_infos,
+                         key=lambda f: getattr(f, 'air_state', '') != 'AirOff')
+        for info in ordered:
+            try:
+                raw, _ = read_run_file(str(info.filepath))
+            except Exception:                          # noqa: BLE001
+                continue
+            if has_tunnel_channels(raw.data):
+                data = dict(raw.data)
+                copy_balance_markers(raw, data)
+                p0, t0 = tunnel_totals(data)
+                return p0, t0, Path(info.filepath).name
+        return None
+
+    @staticmethod
+    def _tunnel_off_points(reduced: list, infos: list,
+                           fraction: float = 0.5) -> List[str]:
+        """Notes for points whose MEASURED Mach fell below ``fraction`` of
+        the COMMANDED Mach - the tunnel was off or spinning down (the May
+        2026 F16 M3 set's last point, alpha 26 / beta 5, holds Mach 0.04
+        at a 0.3 command). Kept, never dropped: the operator decides.
+        ``reduced`` (daq.red) is in the same order as ``infos``."""
+        out = []
+        for rd, info in zip(reduced or [], infos or []):
+            on = getattr(rd, 'air_on', None) or {}
+            for axis, nominal in (('Alpha', info.alpha), ('Beta', info.beta)):
+                if axis in on and nominal is not None:
+                    held = float(np.nanmean(np.asarray(on[axis], float)))
+                    if np.isfinite(held) and abs(held - nominal) > 1.0:
+                        out.append(
+                            f"alpha {info.alpha:.1f} / beta {info.beta:.1f}:"
+                            f" measured {axis.lower()} {held:.2f} deg, "
+                            f"commanded {nominal:g} - the positioner was "
+                            f"not at the point.")
+            cmd = getattr(info, 'speed', None)
+            if (getattr(info, 'speed_unit', None) != 'mach' or not cmd
+                    or getattr(rd, 'tunnel', None) is None
+                    or not len(rd.tunnel.Mach)):
+                continue
+            meas = float(np.nanmean(rd.tunnel.Mach))
+            if np.isfinite(meas) and meas < fraction * float(cmd):
+                out.append(
+                    f"alpha {info.alpha:.1f} / beta {info.beta:.1f}: "
+                    f"measured Mach {meas:.3f} at a {float(cmd):g} command"
+                    f" - tunnel off or spinning down; its coefficients "
+                    f"are not valid.")
+        return out
 
     @staticmethod
     def _attach_point_metadata(case: TestCase, file_infos: list, ss) -> None:
@@ -1167,7 +1282,8 @@ class DataController(QObject):
             self.status_changed.emit(
                 "External balance detected — resolved loads, no balance "
                 "calibration required;" + span_note)
-        elif not self._balance_cal and not self._balance_cal_file:
+        elif (not self._balance_cal and not self._balance_cal_file
+              and not self._directories_carry_balance_cal(valid_dirs)):
             self.error_occurred.emit(
                 "No Balance Calibration",
                 "Load a balance calibration (.vol) file before processing data.\n\n"
@@ -1248,6 +1364,29 @@ class DataController(QObject):
 
         self._current_worker = worker
         self._thread_pool.start(worker)
+
+    @staticmethod
+    def _directories_carry_balance_cal(directories: List[str]) -> bool:
+        """True when a run directory brings its own balance calibration:
+        the .vol Freestream copies in at run start (find_run_balance_cal)
+        or a calibration matrix injected into the run files. The worker
+        already reduces with either; only this pre-flight check demanded a
+        manually loaded .vol (October 2026 F16 set refused to load)."""
+        if not BACKEND_AVAILABLE:
+            return False
+        for directory in directories:
+            try:
+                if find_run_balance_cal(directory):
+                    return True
+                runs = sorted(Path(directory).glob('*.mat')) + sorted(
+                    Path(directory).glob('*.h5'))
+                if runs:
+                    raw, _ = read_run_file(str(runs[0]))
+                    if raw.properties.get('injected_balance_cal'):
+                        return True
+            except Exception:                          # noqa: BLE001
+                continue
+        return False
 
     def _seed_config_from_run_files(self, directories: List[str]) -> None:
         """Seed model geometry / balance config from what the run recorded.

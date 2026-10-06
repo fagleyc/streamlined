@@ -6,7 +6,7 @@ Functions for computing aerodynamic coefficients from forces and moments.
 """
 
 import numpy as np
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple
 from dataclasses import dataclass, field
 
 from .transforms import WRFForces
@@ -209,6 +209,58 @@ def _temperature_channel_to_celsius(raw_channel: np.ndarray,
             return (eng - 491.67) * 5.0 / 9.0
         return eng                                       # degC
     return _convert_thermocouple_to_celsius(arr, temp_cal_mode)
+
+
+TUNNEL_CONDITION_CHANNELS = ('Pdiff', 'Ptot', 'Temp')
+
+
+def has_tunnel_channels(raw_data: Dict[str, Any]) -> bool:
+    """True when a raw point carries all three tunnel-condition channels."""
+    return all(k in raw_data for k in TUNNEL_CONDITION_CHANNELS)
+
+
+def tunnel_totals(raw_data: Dict[str, Any],
+                  pressure_cal: Optional[Dict[str, Any]] = None,
+                  temp_cal_mode: str = 'auto') -> Tuple[float, float]:
+    """Mean calibrated total pressure [psia] and total temperature [degC]
+    of one raw point, through the SAME converters the reduction uses
+    (injected per-channel cal, else .pcf, else the DaqBook default)."""
+    channel_cal = (raw_data.get('channel_cal')
+                   if hasattr(raw_data, 'get') else None)
+    p0 =_pressure_channel_to_psi(raw_data['Ptot'], 'Ptot', channel_cal,
+                                  pressure_cal, 'P690', absolute=True)
+    t0 = _temperature_channel_to_celsius(raw_data['Temp'], channel_cal,
+                                         temp_cal_mode)
+    return float(np.nanmean(p0)), float(np.nanmean(t0))
+
+
+def commanded_tunnel_channels(n_samples: int, mach: float, p0_psia: float,
+                              t0_c: float) -> Dict[str, Any]:
+    """Tunnel-condition channels for a run that recorded none.
+
+    Legacy LabVIEW runs (the May 2026 F16 M2 set) were acquired without
+    the DaqBook, so Pdiff/Ptot/Temp are missing and q is unknown.  Given
+    the COMMANDED Mach and a measured total pressure / temperature from a
+    sibling run of the same session, the isentropic chain is inverted:
+    P_static = P0 / (1 + (g-1)/2 M^2)^(g/(g-1)), Pdiff = P0 - P_static.
+    The channels are returned in engineering units with an IDENTITY
+    channel_cal, so calc_tunnel_conditions reproduces exactly that Mach
+    and q = (g/2) P_static M^2.  Note q does not depend on temperature;
+    the borrowed T0 only affects velocity, density and Reynolds number.
+    """
+    gm1 = GAMMA - 1.0
+    p_static = p0_psia / (1.0 + 0.5 * gm1 * mach ** 2) ** (GAMMA / gm1)
+    n = max(int(n_samples), 1)
+    return {
+        'Pdiff': np.full(n, p0_psia - p_static),
+        'Ptot': np.full(n, p0_psia),
+        'Temp': np.full(n, t0_c),
+        'channel_cal': {
+            'Pdiff': {'type': 'identity', 'unit': 'psid'},
+            'Ptot': {'type': 'identity', 'unit': 'psia'},
+            'Temp': {'type': 'identity', 'unit': 'degC'},
+        },
+    }
 
 
 def calc_tunnel_conditions(raw_data: Dict[str, np.ndarray],
