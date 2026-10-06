@@ -215,6 +215,8 @@ class PlotPanel(QWidget):
                 background-color: {DarkTheme.BACKGROUND_LIGHT};
                 border-left: 1px solid {DarkTheme.BORDER};
             }}
+            /* labels are QFrames too — keep them unboxed */
+            QLabel {{ border: none; background: transparent; }}
         """)
 
         self.plot_controls = PlotControlsWidget()

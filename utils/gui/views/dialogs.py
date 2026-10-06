@@ -1331,7 +1331,7 @@ class AboutDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle(f"About {__app_name__}")
-        self.setFixedSize(520, 560)
+        self.setFixedSize(600, 680)
 
         self._setup_ui()
 
@@ -1341,11 +1341,36 @@ class AboutDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.setSpacing(12)
 
+        # Brand plate: Aeronautics roundel + USAFA wordmark on white (the
+        # marks are never recolored, so they always sit on a white field)
+        from ..utils import themekit
+        plate = QWidget()
+        plate.setObjectName("aboutPlate")
+        plate.setStyleSheet("QWidget#aboutPlate { background: #ffffff; "
+                            "border-radius: 10px; }")
+        pl = QHBoxLayout(plate)
+        pl.setContentsMargins(18, 14, 18, 14)
+        roundel = QLabel()
+        roundel.setPixmap(themekit.logo_pixmap("dfan-aeronautics.png", 96,
+                                               plate=False))
+        pl.addWidget(roundel)
+        pl.addStretch(1)
+        wordmark = QLabel()
+        wordmark.setPixmap(themekit.logo_pixmap("wordmark-horizontal.png", 74,
+                                                plate=False))
+        pl.addWidget(wordmark)
+        layout.addWidget(plate)
+
         # App name + version, prominent
         title = QLabel(__app_name__)
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title.setFont(QFont("Segoe UI", 20, QFont.Weight.Bold))
+        title.setFont(QFont("Trebuchet MS", 22, QFont.Weight.Bold))
         layout.addWidget(title)
+
+        org = QLabel(themekit.ORG_LINE)
+        org.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        org.setStyleSheet(f"color: {DarkTheme.TEXT_SECONDARY};")
+        layout.addWidget(org)
 
         version = QLabel(f"Version {__version__}")
         version.setAlignment(Qt.AlignmentFlag.AlignCenter)

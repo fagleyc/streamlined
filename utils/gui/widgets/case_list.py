@@ -215,6 +215,8 @@ class CaseListWidget(QWidget):
                 border: none;
                 border-bottom: 1px solid {DarkTheme.BORDER};
             }}
+            /* labels are QFrames too — keep them unboxed */
+            QLabel {{ border: none; background: transparent; }}
         """)
         header_layout = QHBoxLayout(header)
         header_layout.setContentsMargins(12, 8, 12, 8)
@@ -278,6 +280,8 @@ class CaseListWidget(QWidget):
                 border: none;
                 border-top: 1px solid {DarkTheme.BORDER};
             }}
+            /* labels are QFrames too — keep them unboxed */
+            QLabel {{ border: none; background: transparent; }}
         """)
         footer_layout = QHBoxLayout(footer)
         footer_layout.setContentsMargins(8, 4, 8, 4)

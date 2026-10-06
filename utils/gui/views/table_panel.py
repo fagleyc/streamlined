@@ -79,6 +79,8 @@ class TablePanel(QWidget):
                 background-color: {DarkTheme.BACKGROUND_LIGHT};
                 border-bottom: 1px solid {DarkTheme.BORDER};
             }}
+            /* labels are QFrames too — keep them unboxed */
+            QLabel {{ border: none; background: transparent; }}
         """)
         toolbar_layout = QHBoxLayout(toolbar)
         toolbar_layout.setContentsMargins(8, 4, 8, 4)
@@ -150,6 +152,8 @@ class TablePanel(QWidget):
                 background-color: {DarkTheme.BACKGROUND_LIGHTER};
                 border-top: 1px solid {DarkTheme.BORDER};
             }}
+            /* labels are QFrames too — keep them unboxed */
+            QLabel {{ border: none; background: transparent; }}
         """)
         status_layout = QHBoxLayout(self.status_bar)
         status_layout.setContentsMargins(8, 4, 8, 4)

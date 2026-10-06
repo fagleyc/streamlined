@@ -18,11 +18,22 @@ from .models.settings import AppSettings
 from .views.main_window import MainWindow
 from .controllers.data_controller import DataController
 from .utils.themes import get_stylesheet, DarkTheme
+from .utils import themekit
 from . import __app_name__, __version__
 
 
 def create_splash_pixmap() -> QPixmap:
-    """Create a splash screen pixmap."""
+    """USAFA-branded splash (Aeronautics roundel + Academy wordmark)."""
+    try:
+        return themekit.make_splash_pixmap(
+            __app_name__, __version__,
+            "Wind tunnel data reduction & analysis")
+    except Exception:                                  # noqa: BLE001
+        return _plain_splash_pixmap()
+
+
+def _plain_splash_pixmap() -> QPixmap:
+    """Fallback splash if the brand assets are missing."""
     pixmap = QPixmap(400, 250)
     pixmap.fill(QColor(DarkTheme.BACKGROUND))
 
@@ -82,12 +93,14 @@ class WindTunnelApp:
         self.app.setOrganizationName("WindTunnel")
         self.app.setOrganizationDomain("windtunnel.local")
 
-        # Apply stylesheet
-        self.app.setStyleSheet(get_stylesheet())
+        self.app.setWindowIcon(themekit.app_icon())
 
-        # Set default font
-        font = QFont("Segoe UI", 10)
-        self.app.setFont(font)
+        # Theme / UI scale / density persist per user (View ▸ Theme,
+        # View ▸ Appearance…). Same QSettings store as AppSettings; the
+        # manager also sets the app font and stylesheet.
+        from PyQt6.QtCore import QSettings
+        themekit.manager().init(self.app,
+                                QSettings("WindTunnelLab", "DataAnalyzer"))
 
     def create_components(self):
         """Create the MVC components."""

@@ -225,6 +225,15 @@ class FastPlotCanvas(QWidget):
 
         self._setup_ui()
         self._apply_style()
+        from ..utils import themekit
+        themekit.manager().changed.connect(self._on_theme_changed)
+
+    def _on_theme_changed(self, *_):
+        """Live theme switch: re-run the style pass (axes, grid, toolbar)."""
+        try:
+            self._apply_style()
+        except RuntimeError:                           # widget deleted
+            pass
 
     def _setup_ui(self):
         """Set up the UI components."""

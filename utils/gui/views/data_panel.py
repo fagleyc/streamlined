@@ -166,6 +166,8 @@ class DataPanel(QWidget):
                 border: none;
                 border-bottom: 1px solid {DarkTheme.BORDER};
             }}
+            /* labels are QFrames too — keep them unboxed */
+            QLabel {{ border: none; background: transparent; }}
         """)
         layout.addWidget(self.cal_section)
 
@@ -177,6 +179,8 @@ class DataPanel(QWidget):
                 border: none;
                 border-bottom: 1px solid {DarkTheme.BORDER};
             }}
+            /* labels are QFrames too — keep them unboxed */
+            QLabel {{ border: none; background: transparent; }}
         """)
         geo_layout = QHBoxLayout(geo_frame)
         geo_layout.setContentsMargins(12, 8, 12, 8)
@@ -202,6 +206,8 @@ class DataPanel(QWidget):
                 border: none;
                 border-bottom: 1px solid {DarkTheme.BORDER};
             }}
+            /* labels are QFrames too — keep them unboxed */
+            QLabel {{ border: none; background: transparent; }}
         """)
         load_layout = QVBoxLayout(load_frame)
         load_layout.setContentsMargins(12, 8, 12, 8)
@@ -220,7 +226,7 @@ class DataPanel(QWidget):
         btn_layout.addWidget(self.btn_load_dir)
 
         self.btn_process = QPushButton("Process Data")
-        self.btn_process.setIcon(Icons.play())
+        self.btn_process.setIcon(Icons.play("ON_ACCENT"))  # on the blue button
         self.btn_process.setToolTip("Process loaded data")
         self.btn_process.setProperty("primary", True)
         self.btn_process.clicked.connect(self.process_requested.emit)

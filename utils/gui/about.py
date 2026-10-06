@@ -6,7 +6,7 @@ Shared metadata template used across the wind-tunnel software ecosystem
 contact, and a compact version history (newest first).
 """
 
-__version__ = "1.3.10"
+__version__ = "1.4.0"
 APP_NAME = "Streamlined"
 AUTHOR = "C. Fagley"
 CONTACT = "casey.fagley@afacademy.af.edu"
@@ -15,6 +15,12 @@ CONTACT = "casey.fagley@afacademy.af.edu"
 # Dates for 1.2.4+ from the repository history; earlier dates from the
 # archived release zips in Versions/.
 VERSION_HISTORY = [
+    ("1.4.0", "2026-10-02",
+     "Live themes (USAFA Night/Day in official Academy colors, Classic "
+     "Dark/Light, High Contrast) from View ▸ Theme or the status-bar "
+     "chip; Appearance dialog with UI scale + density; Ctrl+K command "
+     "palette; full screen; theme-following icons and plots; USAFA / "
+     "Aeronautics branding on the header, splash, About and window icon"),
     ("1.3.10", "2026-09-30",
      "Exports carry the per-channel calibration beside the raw volts: "
      "a Channel_Cal group in MAT, cal_slope/offset/unit/type attributes "

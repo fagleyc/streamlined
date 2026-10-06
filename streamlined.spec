@@ -4,7 +4,8 @@ a = Analysis(
     ['streamlined.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    # USAFA / Aeronautics brand marks (splash, About, window icon, badge)
+    datas=[('utils/gui/assets/usafa', 'utils/gui/assets/usafa')],
     hiddenimports=[
         'nptdms',
         'scipy',
