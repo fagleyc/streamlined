@@ -138,6 +138,21 @@ class PlotControlsWidget(QWidget):
 _BETA_LINESTYLES = ['-', '--', '-.', ':']
 _BETA_MARKERS = ['o', 's', '^', 'D', 'v', '<', '>', 'p', 'h', '*']
 
+# Hysteresis legs: marker, legend suffix.  The outbound leg (sweep_dir
+# 'up', or blank on a run whose return leg alone is tagged) points up, the
+# return leg ('dn') points down.
+_LEG_STYLE = {
+    'up': ('^', ' ↑'),
+    'dn': ('v', ' ↓'),
+}
+
+
+def _leg_linestyle(base: str, leg: str) -> str:
+    """Return leg drawn in a different dash than its outbound leg."""
+    if leg != 'dn':
+        return base
+    return '--' if base == '-' else ':'
+
 # Variables that vary along the SPEED sweep rather than along an alpha or
 # beta sweep.  Putting one of these on the x axis means each alpha/beta
 # point becomes its own trace, walking across the speed steps; otherwise a
@@ -433,6 +448,64 @@ class PlotPanel(QWidget):
             self.view_fft_requested.emit(case_id, alpha, beta, y_var)
 
     @staticmethod
+    def _hysteresis_legs(case: TestCase, mask: np.ndarray,
+                         sweep_key: np.ndarray):
+        """Split one trace's points into hysteresis legs, in run order.
+
+        ``mask`` selects the trace's points from the flat case arrays and
+        ``sweep_key`` is the swept angle of the selected points (same
+        length as ``mask.sum()``).  Returns ``[(leg, order), ...]`` where
+        ``order`` indexes the selected points.
+
+        A trace whose points carry both an outbound ('up' or blank) and a
+        return ('dn') tag is split into two legs, each ordered by the
+        acquisition run number (falling back to the tag's own direction:
+        ascending 'up', descending 'dn'), so the plot follows the sweep the tunnel actually ran instead of
+        interleaving the two legs by angle.  Anything else - no tags, a
+        one-legged sweep, or a tag array that does not line up with the
+        points - is one leg sorted by the swept angle, exactly as before.
+        """
+        sweep_key = np.asarray(sweep_key, dtype=float)
+        default = [('', np.argsort(sweep_key, kind='stable'))]
+        n = mask.size
+        dirs = np.asarray(getattr(case, 'sweep_dirs', np.array([])))
+        dirs = dirs.flatten()
+        if dirs.size != n:
+            return default
+        legs = np.array(['dn' if str(d).strip().lower() == 'dn' else 'up'
+                         for d in dirs[mask]])
+        if not (np.any(legs == 'dn') and np.any(legs == 'up')):
+            return default
+
+        # The tag IS the sign of the angle rate (Freestream stamps
+        # alpha_dot = +1 on 'up', -1 on 'dn'), so without run numbers a
+        # leg is still ordered correctly: ascending up, descending down.
+        signed = np.where(legs == 'dn', -sweep_key, sweep_key)
+        runs = np.asarray(getattr(case, 'run_numbers', np.array([])))
+        runs = runs.flatten()
+        run_key = None
+        if runs.size == n:
+            try:
+                run_key = runs.astype(float)[mask]
+            except (TypeError, ValueError):
+                run_key = None
+            if run_key is not None and not np.all(np.isfinite(run_key)):
+                run_key = None          # partial record: don't half-trust it
+
+        out = []
+        for leg in ('up', 'dn'):
+            idx = np.flatnonzero(legs == leg)
+            if run_key is not None:
+                idx = idx[np.lexsort((signed[idx], run_key[idx]))]
+            else:
+                idx = idx[np.argsort(signed[idx], kind='stable')]
+            out.append((leg, idx))
+        # Draw the leg that was flown first first (legend order follows).
+        if run_key is not None:
+            out.sort(key=lambda item: run_key[item[1][0]])
+        return out
+
+    @staticmethod
     def _mach_point_mask(case: TestCase, sel_mach: Optional[float]):
         """Flat boolean mask selecting points in the speed STEP whose Mach
         matches ``sel_mach``, or None when no Mach filtering applies (no
@@ -676,37 +749,43 @@ class PlotPanel(QWidget):
                     if not np.any(mask):
                         continue
 
-                    sort_order = np.argsort(grp_beta[mask])
-                    x_data = self._convert_x(
-                        self._get_var_data_1d(case, x_var, mask), x_var
-                    )[sort_order]
-                    y_data = self._convert_y(self._get_var_data_1d(
-                        case, y_var, mask)[sort_order], y_var)
-
-                    if len(x_data) == 0 or len(y_data) == 0:
-                        continue
-
                     if single_alpha:
                         label = case.name
                     else:
                         label = (f"{case.name}"
                                  f" \u03b1={alpha_val:.1f}\u00b0")
+                    base_ls = _BETA_LINESTYLES[idx % len(_BETA_LINESTYLES)]
+                    base_mk = _BETA_MARKERS[idx % len(_BETA_MARKERS)]
 
-                    alpha_vals = flat_alpha[mask][sort_order]
-                    beta_vals = flat_beta[mask][sort_order]
-                    ls = _BETA_LINESTYLES[idx % len(_BETA_LINESTYLES)]
-                    mk = _BETA_MARKERS[idx % len(_BETA_MARKERS)]
-                    self.plot_canvas.plot(x_data, y_data, label=label,
-                                          color=case.color, marker=mk,
-                                          linestyle=ls, linewidth=lw,
-                                          markersize=ms, case_id=case.id,
-                                          alpha_arr=alpha_vals,
-                                          beta_arr=beta_vals)
-                    if self.model.plot_config.show_std_dev:
-                        std_var = self._get_std_var(y_var)
-                        if std_var:
-                            y_std = self._get_var_data_1d(
-                                case, std_var, mask)[sort_order]
+                    x_all = self._convert_x(
+                        self._get_var_data_1d(case, x_var, mask), x_var)
+                    y_all = self._convert_y(
+                        self._get_var_data_1d(case, y_var, mask), y_var)
+                    std_var = (self._get_std_var(y_var)
+                               if self.model.plot_config.show_std_dev
+                               else None)
+                    y_std_all = (self._get_var_data_1d(case, std_var, mask)
+                                 if std_var else None)
+
+                    # Beta order; a hysteresis (return) sweep in beta
+                    # splits into up / down legs in acquisition order.
+                    for leg, sort_order in self._hysteresis_legs(
+                            case, mask, grp_beta[mask]):
+                        x_data = x_all[sort_order]
+                        y_data = y_all[sort_order]
+                        if len(x_data) == 0 or len(y_data) == 0:
+                            continue
+                        mk, suffix = _LEG_STYLE.get(leg, (base_mk, ''))
+                        ls = _leg_linestyle(base_ls, leg)
+                        alpha_vals = flat_alpha[mask][sort_order]
+                        beta_vals = flat_beta[mask][sort_order]
+                        self.plot_canvas.plot(
+                            x_data, y_data, label=label + suffix,
+                            color=case.color, marker=mk, linestyle=ls,
+                            linewidth=lw, markersize=ms, case_id=case.id,
+                            alpha_arr=alpha_vals, beta_arr=beta_vals)
+                        if y_std_all is not None:
+                            y_std = y_std_all[sort_order]
                             if len(y_std) == len(y_data):
                                 self.plot_canvas.fill_between(
                                     x_data, y_data - y_std,
@@ -769,38 +848,46 @@ class PlotPanel(QWidget):
                     if not np.any(mask):
                         continue
 
-                    # Sort by alpha within each (speed, beta) group
-                    sort_order = np.argsort(grp_alpha[mask])
-
-                    x_data = self._convert_x(
-                        self._get_var_data_1d(case, x_var, mask),
-                        x_var)[sort_order]
-                    y_data = self._convert_y(self._get_var_data_1d(case, y_var, mask)[sort_order], y_var)
-
-                    if len(x_data) == 0 or len(y_data) == 0:
-                        continue
-
                     parts = [case.name]
                     if multi_mach and mach_val is not None:
                         parts.append(f"M={mach_val:.3f}")
                     if not single_beta:
                         parts.append(f"\u03b2={beta_val:.1f}\u00b0")
                     label = " ".join(parts)
+                    base_ls = _BETA_LINESTYLES[
+                        trace_idx % len(_BETA_LINESTYLES)]
+                    base_mk = _BETA_MARKERS[trace_idx % len(_BETA_MARKERS)]
 
-                    alpha_vals = flat_alpha[mask][sort_order]
-                    beta_vals = flat_beta[mask][sort_order]
-                    ls = _BETA_LINESTYLES[trace_idx % len(_BETA_LINESTYLES)]
-                    mk = _BETA_MARKERS[trace_idx % len(_BETA_MARKERS)]
-                    self.plot_canvas.plot(x_data, y_data, label=label,
-                                          color=case.color, marker=mk,
-                                          linestyle=ls, linewidth=lw,
-                                          markersize=ms, case_id=case.id,
-                                          alpha_arr=alpha_vals, beta_arr=beta_vals)
-                    if self.model.plot_config.show_std_dev:
-                        std_var = self._get_std_var(y_var)
-                        if std_var:
-                            y_std = self._get_var_data_1d(
-                                case, std_var, mask)[sort_order]
+                    x_all = self._convert_x(
+                        self._get_var_data_1d(case, x_var, mask), x_var)
+                    y_all = self._convert_y(
+                        self._get_var_data_1d(case, y_var, mask), y_var)
+                    std_var = (self._get_std_var(y_var)
+                               if self.model.plot_config.show_std_dev
+                               else None)
+                    y_std_all = (self._get_var_data_1d(case, std_var, mask)
+                                 if std_var else None)
+
+                    # Alpha order within each (speed, beta) group; a
+                    # hysteresis run splits into its up and down legs,
+                    # each in acquisition order.
+                    for leg, sort_order in self._hysteresis_legs(
+                            case, mask, grp_alpha[mask]):
+                        x_data = x_all[sort_order]
+                        y_data = y_all[sort_order]
+                        if len(x_data) == 0 or len(y_data) == 0:
+                            continue
+                        mk, suffix = _LEG_STYLE.get(leg, (base_mk, ''))
+                        ls = _leg_linestyle(base_ls, leg)
+                        alpha_vals = flat_alpha[mask][sort_order]
+                        beta_vals = flat_beta[mask][sort_order]
+                        self.plot_canvas.plot(
+                            x_data, y_data, label=label + suffix,
+                            color=case.color, marker=mk, linestyle=ls,
+                            linewidth=lw, markersize=ms, case_id=case.id,
+                            alpha_arr=alpha_vals, beta_arr=beta_vals)
+                        if y_std_all is not None:
+                            y_std = y_std_all[sort_order]
                             if len(y_std) == len(y_data):
                                 self.plot_canvas.fill_between(
                                     x_data, y_data - y_std,
