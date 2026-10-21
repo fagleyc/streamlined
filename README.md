@@ -1022,6 +1022,8 @@ units.
 | HDF5 | .h5 | Hierarchical structure with optional raw/reduced time-series |
 | MAT | .mat | MATLAB-compatible, nested structs via scipy.io |
 
+**Units.** The dialog's *Units* choice applies to the whole file: **Metric** (MKS: N, N-m, Pa, m/s, kg/m^3, degC, m, m^2), the default, or **English** (IPS: lbf, lb-in, psi, ft/s, slug/ft^3, degF, in, sq in). Every dimensional quantity is converted to it, including the geometry, which is brought out of its own input units first. Each field's unit travels with it: the column headers in Excel and CSV, a parallel `case.Units.<group>.<field>` struct (plus `case.Units.system`) in a .mat, and a `units` attribute on each HDF5 dataset. Raw channels stay as recorded (volts, or the instrument's unit for an identity calibration) and are labelled that way; `Q_mks` is dropped because `Q` is already in the chosen units. COE files keep their fixed legacy units. Excel, CSV and the table carry `P_static` beside `P_tot`.
+
 **HDF5 Structure (when extended data enabled):**
 ```
 /calibration/           — balance and pressure cal metadata

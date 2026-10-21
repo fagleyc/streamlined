@@ -141,4 +141,4 @@ class TestSelector:
         panel.plot_controls.plot_selector.set_y_var("Lift")
         assert panel._get_axis_vars() == ("Alpha", "Lift")
         converted = panel._convert_y(case.lift_forces, "Lift")
-        np.testing.assert_allclose(converted, case.lift_forces * 4.44822)
+        np.testing.assert_allclose(converted, case.lift_forces * 4.4482216152605)

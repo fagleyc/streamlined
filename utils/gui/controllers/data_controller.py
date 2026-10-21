@@ -697,6 +697,7 @@ class ProcessingWorker(QRunnable):
                     rho_list = []
                     T_list = []
                     Ptot_list = []
+                    Pstat_list = []
 
                     # Collect WRF forces and moments
                     lift_list = []
@@ -732,6 +733,9 @@ class ProcessingWorker(QRunnable):
                             if hasattr(tc, 'P_tot') and len(tc.P_tot) > 0:
                                 # Convert from Pa to psi (internal unit)
                                 Ptot_list.append(np.mean(tc.P_tot) / 6894.75729)
+                            if len(getattr(tc, 'P_static', [])) > 0:
+                                # Pa -> psi, like P_tot
+                                Pstat_list.append(np.mean(tc.P_static) / 6894.75729)
 
                         # Extract WRF forces/moments if available (wrf_aero is the aerodynamic forces)
                         if hasattr(rd, 'wrf_aero') and rd.wrf_aero is not None:
@@ -790,6 +794,8 @@ class ProcessingWorker(QRunnable):
                         case.temperatures = np.array(T_list)
                     if Ptot_list:
                         case.total_pressures = np.array(Ptot_list)
+                    if Pstat_list:
+                        case.static_pressures = np.array(Pstat_list)
 
                     # Store WRF forces and moments (in IPS units: lbf, lb-in)
                     if lift_list:

@@ -16,6 +16,13 @@ from PyQt6.QtCore import Qt
 
 from ..utils.themes import DarkTheme
 
+try:
+    from utils.windtunnel.units import (
+        DEFAULT_EXPORT_UNITS, EXPORT_UNIT_CHOICES)
+except ImportError:                                   # pragma: no cover
+    EXPORT_UNIT_CHOICES = (("Metric (MKS)", "MKS"), ("English (IPS)", "IPS"))
+    DEFAULT_EXPORT_UNITS = "MKS"
+
 
 # Format definitions: (display name, key, file filter, supports extended)
 # Order chosen for usability: most common scientific formats first,
@@ -70,6 +77,23 @@ class ExportDialog(QDialog):
         case_layout.addWidget(self.cmb_cases, stretch=1)
         layout.addLayout(case_layout)
 
+        # --- Units: one system for every quantity in the file ---
+        units_layout = QHBoxLayout()
+        units_layout.addWidget(QLabel("Units:"))
+        self.cmb_units = QComboBox()
+        for label, key in EXPORT_UNIT_CHOICES:
+            self.cmb_units.addItem(label, key)
+        idx = self.cmb_units.findData(DEFAULT_EXPORT_UNITS)
+        self.cmb_units.setCurrentIndex(max(idx, 0))
+        self.cmb_units.setToolTip(
+            "Every dimensional quantity in the file (loads, pressures, "
+            "velocity, density, temperature, geometry) is written in this "
+            "system,\nand each field's unit is recorded with it. "
+            "Raw channels stay as recorded (volts). "
+            "COE files keep their fixed legacy units.")
+        units_layout.addWidget(self.cmb_units, stretch=1)
+        layout.addLayout(units_layout)
+
         # --- Unsteady data option (HDF5 / MAT only) ---
         # A single toggle: include the full per-sample time history for
         # every channel, or just the averaged (steady-state) values.
@@ -122,6 +146,9 @@ class ExportDialog(QDialog):
         if not supports_extended:
             self.chk_unsteady.setChecked(False)
 
+        # COE is a fixed legacy format; the unit choice does not apply
+        self.cmb_units.setEnabled(self.cmb_format.currentData() != 'coe')
+
         # Update placeholder to clarify file-vs-directory for COE
         fmt_key = self.cmb_format.currentData()
         if fmt_key == 'coe':
@@ -166,6 +193,7 @@ class ExportDialog(QDialog):
             'format': self.cmb_format.currentData(),
             'case_scope': self.cmb_cases.currentData(),
             'filepath': self.txt_filepath.text(),
+            'units': self.cmb_units.currentData(),
             # Single unsteady flag: include the full time-series for
             # every channel.  Averaged data + metadata are always saved.
             'include_unsteady': (self.chk_unsteady.isChecked()

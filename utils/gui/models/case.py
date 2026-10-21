@@ -185,6 +185,7 @@ class TestCase:
     temperatures: np.ndarray = field(default_factory=lambda: np.array([]))
     dynamic_pressures: np.ndarray = field(default_factory=lambda: np.array([]))
     total_pressures: np.ndarray = field(default_factory=lambda: np.array([]))
+    static_pressures: np.ndarray = field(default_factory=lambda: np.array([]))  # psi
 
     # Blockage-corrected arrays (populated when a tunnel correction is
     # active; otherwise empty and the uncorrected arrays are primary).
@@ -471,7 +472,7 @@ class TestCase:
             'elem_Ax': self.elem_Ax, 'elem_Roll': self.elem_Roll,
             # Remaining tunnel conditions (kg/m^3, degC, psi)
             'rho': self.densities, 'T': self.temperatures,
-            'P0': self.total_pressures,
+            'P0': self.total_pressures, 'P_static': self.static_pressures,
         }
         if name in ('Fx', 'Fy', 'Fz', 'Mx', 'My', 'Mz'):
             return self.body_loads().get(name, np.array([]))

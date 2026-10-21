@@ -5,6 +5,8 @@ Table Panel
 Panel for displaying coefficient data in tabular format with tunnel conditions.
 """
 
+import contextlib
+
 import numpy as np
 from pathlib import Path
 from typing import Optional, List
@@ -27,6 +29,9 @@ from .. import __version__
 # Import units module for conversion
 try:
     from utils.windtunnel.units import UnitSystem, UnitConverter, UNIT_LABELS
+    from utils.windtunnel.units import (
+        DEFAULT_EXPORT_UNITS, QUANTITY_KINDS, convert_quantity,
+        export_system, geometry_to_ips, quantity_label)
     UNITS_AVAILABLE = True
 except ImportError:
     UNITS_AVAILABLE = False
@@ -229,6 +234,18 @@ class TablePanel(QWidget):
 
     def _update_columns(self):
         """Update table columns based on checkbox state and output units."""
+        self._columns = self._build_columns()
+
+        self.table.setColumnCount(len(self._columns))
+        self.table.setHorizontalHeaderLabels([col[1] for col in self._columns])
+
+        header = self.table.horizontalHeader()
+        header.setStretchLastSection(True)
+        for i in range(len(self._columns)):
+            header.setSectionResizeMode(i, QHeaderView.ResizeMode.ResizeToContents)
+
+    def _build_columns(self) -> list:
+        """(key, header) per column, labelled in the current output units."""
         labels = self._get_unit_labels()
 
         base_columns = [
@@ -278,6 +295,7 @@ class TablePanel(QWidget):
             ("rho", f"rho [{labels.density}]"),
             ("T", f"T [{labels.temperature}]"),
             ("P_tot", f"P_tot [{labels.pressure}]"),
+            ("P_static", f"P_static [{labels.pressure}]"),
         ]
 
         # Custom calculator columns - one per unique custom variable
@@ -292,19 +310,30 @@ class TablePanel(QWidget):
                     seen_custom.add(name)
                     custom_columns.append((f'custom:{name}', name))
 
-        # Build column list.  Tunnel conditions are always included.
-        self._columns = (base_columns + force_columns + moment_columns
-                         + element_columns + tunnel_columns)
-        # Append custom columns last so they don't shift built-ins
-        self._columns = self._columns + custom_columns
+        # Tunnel conditions are always included; custom columns go last
+        # so they don't shift built-ins
+        return (base_columns + force_columns + moment_columns
+                + element_columns + tunnel_columns + custom_columns)
 
-        self.table.setColumnCount(len(self._columns))
-        self.table.setHorizontalHeaderLabels([col[1] for col in self._columns])
+    @contextlib.contextmanager
+    def _export_units(self, config: Optional[dict]):
+        """Write an export in the unit system its config chose.
 
-        header = self.table.horizontalHeader()
-        header.setStretchLastSection(True)
-        for i in range(len(self._columns)):
-            header.setSectionResizeMode(i, QHeaderView.ResizeMode.ResizeToContents)
+        File > Export picks Metric or English per file, independent of
+        the units the table is displayed in, and defaults to Metric
+        (MKS). Every builder reads self._output_units / self._columns,
+        so they are swapped for the export and restored afterwards; the
+        table widget itself is not touched.
+        """
+        units = str((config or {}).get('units') or DEFAULT_EXPORT_UNITS
+                    if UNITS_AVAILABLE else self._output_units).upper()
+        saved = (self._output_units, getattr(self, '_columns', None))
+        self._output_units = units
+        self._columns = self._build_columns()
+        try:
+            yield units
+        finally:
+            self._output_units, self._columns = saved
 
     def set_output_units(self, units: str):
         """Set output units and refresh the display."""
@@ -534,6 +563,8 @@ class TablePanel(QWidget):
         rho = _sort(case.densities) if len(case.densities) > 0 else None
         T = _sort(case.temperatures) if len(case.temperatures) > 0 else None
         Ptot = _sort(case.total_pressures) if len(case.total_pressures) > 0 else None
+        Pstat = (_sort(case.static_pressures)
+                 if len(getattr(case, 'static_pressures', [])) > 0 else None)
 
         # Pre-sort custom variables to the same row order so columns
         # line up.  Missing values for a case yield NaN per row.
@@ -544,6 +575,8 @@ class TablePanel(QWidget):
                 custom_sorted[name] = _sort(arr)
             except Exception:
                 custom_sorted[name] = None
+
+        elem_kinds = [kind for _name, kind in case.element_channels]
 
         for i in range(len(alphas)):
             ld = Cl[i] / Cd[i] if Cd[i] != 0 else float('inf')
@@ -588,15 +621,15 @@ class TablePanel(QWidget):
             ax_val = eAx[i] if eAx is not None and i < len(eAx) else 0.0
             rl_val = eRl[i] if eRl is not None and i < len(eRl) else 0.0
 
+            elems = [n1_val, n2_val, y1_val, y2_val, ax_val, rl_val]
             if converter:
-                n1_val = converter.convert_force(n1_val)
-                n2_val = converter.convert_force(n2_val)
-                y1_val = converter.convert_force(y1_val)
-                y2_val = converter.convert_force(y2_val)
-                ax_val = converter.convert_force(ax_val)
-                rl_val = converter.convert_force(rl_val)
+                # Each slot converts as what it is: an external
+                # balance's Mx..Mz are moments (lb-in), not forces
+                elems = [converter.convert_moment(v) if kind == 'moment'
+                         else converter.convert_force(v)
+                         for v, kind in zip(elems, elem_kinds)]
 
-            row.extend([n1_val, n2_val, y1_val, y2_val, ax_val, rl_val])
+            row.extend(elems)
 
             # Tunnel condition columns (always present)
             # Q (convert from psi)
@@ -634,6 +667,13 @@ class TablePanel(QWidget):
             if converter:
                 ptot_val = converter.convert_pressure(ptot_val)
             row.append(ptot_val)
+
+            # P_static (convert from psi)
+            pstat_val = (Pstat[i] if Pstat is not None and i < len(Pstat)
+                         else 0.0)
+            if converter:
+                pstat_val = converter.convert_pressure(pstat_val)
+            row.append(pstat_val)
 
             # Custom calculator columns (no unit conversion - they are
             # user-defined and the user expression dictates the units)
@@ -778,6 +818,15 @@ class TablePanel(QWidget):
             unit = f" [{labels.pressure}]" if labels else ""
             header.append((f"Total Pressure (P_tot){unit}", f"{ptot_val:.4f}"))
 
+        # Static pressure (stored in psi, convert to output)
+        if len(getattr(case, 'static_pressures', [])) > 0:
+            pstat_val = float(np.mean(case.static_pressures))
+            if converter:
+                pstat_val = converter.convert_pressure(pstat_val)
+            unit = f" [{labels.pressure}]" if labels else ""
+            header.append((f"Static Pressure (P_static){unit}",
+                           f"{pstat_val:.4f}"))
+
         # Velocity (stored in m/s, convert to output)
         u_val = None
         if case.velocity is not None:
@@ -817,13 +866,17 @@ class TablePanel(QWidget):
         # Calibration information
         header.extend(self._build_calibration_header())
 
-        # Geometry
-        header.append(("MAC", f"{self.model.mac}"))
-        header.append(("Ref Area", f"{self.model.ref_area}"))
-        header.append(("Span", f"{self.model.span}"))
-        header.append(("MRC", f"{self.model.mrc}"))
-        header.append(("Input Units", self.model.units))
-        header.append(("Output Units", self.model.output_units))
+        # Geometry, in the output units like everything else
+        geo = self._geometry_out(case)
+        lu = f" [{geo['length_unit']}]" if geo['length_unit'] else ""
+        au = f" [{geo['area_unit']}]" if geo['area_unit'] else ""
+        header.append((f"MAC{lu}", f"{geo['mac']:.6g}"))
+        header.append((f"Ref Area{au}", f"{geo['ref_area']:.6g}"))
+        header.append((f"Span{lu}", f"{geo['span']:.6g}"))
+        header.append((f"MRC{lu}",
+                       "[" + ", ".join(f"{v:.6g}" for v in geo['mrc']) + "]"))
+        header.append(("Geometry Input Units", self.model.units))
+        header.append(("Output Units", self._output_units))
 
         # Metadata
         for key, val in case.metadata.items():
@@ -912,6 +965,12 @@ class TablePanel(QWidget):
             meta['P_tot'] = np.float64(
                 converter.convert_pressure(ptot_val) if converter else ptot_val)
 
+        if len(getattr(case, 'static_pressures', [])) > 0:
+            pstat_val = float(np.mean(case.static_pressures))
+            meta['P_static'] = np.float64(
+                converter.convert_pressure(pstat_val) if converter
+                else pstat_val)
+
         u_val = None
         if case.velocity is not None:
             u_val = case.velocity
@@ -946,17 +1005,19 @@ class TablePanel(QWidget):
         # Calibration information
         meta['calibration'] = self._build_calibration_meta_dict()
 
-        # Geometry
+        # Geometry, in the output units like everything else
+        geo = self._geometry_out(case)
         meta['geometry'] = {
-            'mac': np.float64(self.model.mac),
-            'ref_area': np.float64(self.model.ref_area),
-            'span': np.float64(self.model.span),
-            'mrc': np.array(self.model.mrc, dtype=np.float64),
+            'mac': np.float64(geo['mac']),
+            'ref_area': np.float64(geo['ref_area']),
+            'span': np.float64(geo['span']),
+            'mrc': np.array(geo['mrc'], dtype=np.float64),
             'alpha_offset_deg': np.float64(self.model.alpha_offset),
             'beta_offset_deg': np.float64(self.model.beta_offset),
             'input_units': self.model.units,
-            'output_units': self.model.output_units,
+            'output_units': self._output_units,
         }
+        meta['units'] = self._output_units
 
         # Additional metadata from case
         for key, val in case.metadata.items():
@@ -1275,35 +1336,67 @@ class TablePanel(QWidget):
             'Constants': 'Constants',
             'Other': 'Other',
         }
+        # Every dimensional series is converted to the output units and
+        # its unit recorded in a parallel Units struct
+        # (case.Units.Tunnel_Conditions.Q = 'Pa'), so the file says what
+        # each number is. Raw channels stay as recorded.
+        channel_cal = self._channel_cal_for(case)
+        system = (export_system(self._output_units) if UNITS_AVAILABLE
+                  else None)
+        try:
+            geo_units = (self.model.get_geometry_for_case(case.id) or {}
+                         ).get('units') or self.model.units
+        except Exception:
+            geo_units = self.model.units
+        units_out: dict = {}
         for cat_name, names in cats.items():
             if not names:
                 continue
             key = category_keys.get(cat_name,
                                     self._sanitize_matlab_name(cat_name))
-            sub = {}
+            sub, unit_sub = {}, {}
             for n in names:
                 arr = means.get(n)
                 if arr is None:
                     continue
+                if n == 'Q_mks' and system is not None:
+                    continue    # Q itself is now in the chosen units
                 safe = self._sanitize_matlab_name(n)
+                kind = self._export_kind(n, raw_means)
+                if system is not None and kind is not None:
+                    if kind == 'raw':
+                        unit_sub[safe] = self._raw_unit(n, channel_cal)
+                    else:
+                        if key == 'Geometry' and kind in ('length', 'area'):
+                            arr = geometry_to_ips(np.asarray(arr), kind,
+                                                  geo_units)
+                        arr = convert_quantity(arr, kind, system)
+                        unit_sub[safe] = quantity_label(kind, system)
+                else:
+                    unit_sub[safe] = ''
                 sub[safe] = to3d(arr) if to3d is not None else np.asarray(arr)
             if sub:
                 out[key] = sub
+                units_out[key] = unit_sub
 
-        # All raw signals
+        # All raw signals, as recorded
         if raw_means:
-            raw_sub = {}
+            raw_sub, unit_sub = {}, {}
             for n, arr in raw_means.items():
                 safe = self._sanitize_matlab_name(n)
                 raw_sub[safe] = (to3d(arr) if to3d is not None
                                  else np.asarray(arr))
+                unit_sub[safe] = self._raw_unit(n, channel_cal)
             out['Raw'] = raw_sub
+            units_out['Raw'] = unit_sub
+        if system is not None and units_out:
+            units_out['system'] = self._output_units
+            out['Units'] = units_out
 
         # The calibration that turns those raw volts into engineering
         # units, one entry per calibrated channel, so the exported file
         # is self-describing: Raw.Pdiff is volts, and
         # Channel_Cal.Pdiff.slope is what converts it.
-        channel_cal = self._channel_cal_for(case)
         if channel_cal:
             cal_sub = {}
             for name, entry in channel_cal.items():
@@ -1325,6 +1418,44 @@ class TablePanel(QWidget):
             out['Axes'] = axes3d
 
         return out
+
+    #: Raw channels that freestream records already in engineering units
+    #: (q_meas is the tunnel's own dynamic pressure, in psi).
+    _RAW_ENGINEERING = frozenset({'q_meas'})
+
+    @classmethod
+    def _export_kind(cls, name: str, raw_means: dict) -> Optional[str]:
+        """The quantity kind an exported series converts as.
+
+        A name that is a raw channel is the recorded signal, not the
+        reduced quantity it shares a name with (an external balance
+        records Fx..Mz as volts), so it is 'raw' and left alone, unless
+        its kind has nothing to convert (angles, time, rpm, Mach) or it
+        is one of the engineering-unit channels. None means unknown.
+        """
+        kind = QUANTITY_KINDS.get(name)
+        if name in raw_means and name not in cls._RAW_ENGINEERING:
+            if kind in ('angle', 'time', 'rpm', 'none'):
+                return kind
+            return 'raw'
+        return kind
+
+    def _raw_unit(self, name: str, channel_cal: dict) -> str:
+        """The unit a raw channel was recorded in."""
+        entry = channel_cal.get(name) if channel_cal else None
+        if isinstance(entry, dict):
+            # 'identity' means the instrument already reports its unit
+            if str(entry.get('type', '')).lower() == 'identity':
+                return str(entry.get('unit', ''))
+            return 'V'
+        if name in self._RAW_ENGINEERING:
+            return 'psi'
+        kind = QUANTITY_KINDS.get(name) if UNITS_AVAILABLE else None
+        if kind in ('angle', 'time', 'rpm', 'none'):
+            return quantity_label(kind, UnitSystem.IPS)
+        if name.startswith(('Speed', 'speed')):
+            return '-'
+        return 'V'
 
     def _build_calibration_header(self) -> list:
         """Build calibration key-value pairs for Excel/header export."""
@@ -1352,6 +1483,49 @@ class TablePanel(QWidget):
         cal['balance_config'] = self.model.balance_config
         return cal
 
+    def _geometry_out(self, case: Optional[TestCase] = None) -> dict:
+        """The case's geometry converted to the output units.
+
+        Geometry is entered in its own input units (the geometry
+        dialog's IPS / FPS / MKS); it is brought to inches and then to
+        the output system, so a Metric export carries MAC in m and the
+        reference area in m^2 rather than the numbers as typed.
+        """
+        geo = None
+        if case is not None:
+            try:
+                geo = self.model.get_geometry_for_case(case.id)
+            except Exception:
+                geo = None
+        if not geo:
+            geo = {'mac': self.model.mac, 'ref_area': self.model.ref_area,
+                   'span': self.model.span, 'mrc': self.model.mrc,
+                   'units': self.model.units}
+        mrc = list(geo.get('mrc') or [0.0, 0.0, 0.0])
+        out = {'mac': float(geo.get('mac', 0.0) or 0.0),
+               'ref_area': float(geo.get('ref_area', 0.0) or 0.0),
+               'span': float(geo.get('span', 0.0) or 0.0),
+               'mrc': [float(v) for v in mrc],
+               'length_unit': '', 'area_unit': ''}
+        if not UNITS_AVAILABLE:
+            return out
+        system = export_system(self._output_units)
+        in_units = geo.get('units') or self.model.units
+
+        def _len(v):
+            return float(convert_quantity(
+                geometry_to_ips(v, 'length', in_units), 'length', system))
+
+        out['mac'] = _len(out['mac'])
+        out['span'] = _len(out['span'])
+        out['mrc'] = [_len(v) for v in out['mrc']]
+        out['ref_area'] = float(convert_quantity(
+            geometry_to_ips(out['ref_area'], 'area', in_units), 'area',
+            system))
+        out['length_unit'] = quantity_label('length', system)
+        out['area_unit'] = quantity_label('area', system)
+        return out
+
     def _extract_unsteady_point(self, pt) -> dict:
         """
         Extract all time-series data from a single ReducedDataPoint.
@@ -1378,19 +1552,34 @@ class TablePanel(QWidget):
                 if val is not None and len(val) > 0:
                     data[f'coeff_{attr}'] = np.asarray(val)
 
+        # Time series convert to the output units like the means do
+        units = getattr(self, '_output_units', None)
+        system = (export_system(units) if UNITS_AVAILABLE and units
+                  else None)
+
+        def _conv(val, kind):
+            arr = np.asarray(val)
+            return (convert_quantity(arr, kind, system)
+                    if system is not None else arr)
+
         # WRF forces
         if hasattr(pt, 'wrf_aero') and pt.wrf_aero is not None:
             for attr in ('Lift', 'Drag', 'Side', 'Roll', 'Pitch', 'Yaw'):
                 val = getattr(pt.wrf_aero, attr, None)
                 if val is not None and len(val) > 0:
-                    data[f'force_{attr}'] = np.asarray(val)
+                    kind = ('force' if attr in ('Lift', 'Drag', 'Side')
+                            else 'moment')
+                    data[f'force_{attr}'] = _conv(val, kind)
 
         # Tunnel conditions
         if hasattr(pt, 'tunnel') and pt.tunnel is not None:
-            for attr in ('Q', 'U_inf', 'Mach', 'Re', 'rho', 'T', 'P_tot'):
+            for attr in ('Q', 'U_inf', 'Mach', 'Re', 'rho', 'T', 'P_tot',
+                         'P_static'):
                 val = getattr(pt.tunnel, attr, None)
                 if val is not None and len(val) > 0:
-                    data[f'tunnel_{attr}'] = np.asarray(val)
+                    data[f'tunnel_{attr}'] = _conv(
+                        val, QUANTITY_KINDS.get(attr, 'none')
+                        if UNITS_AVAILABLE else 'none')
 
         # Balance element forces (air-on minus air-off)
         if hasattr(pt, 'brf_on') and pt.brf_on is not None:
@@ -1418,8 +1607,15 @@ class TablePanel(QWidget):
                 model = getattr(self, 'model', None)
                 elem_names = element_channel_names(
                     btype, getattr(model, 'balance_config', 'Force'))
+                from utils.windtunnel.transforms import element_channels
+                kinds = [k for _n, k in element_channels(
+                    btype, getattr(model, 'balance_config', 'Force'))]
                 for col_idx, name in enumerate(elem_names):
-                    data[f'element_{name}'] = elems[:, col_idx]
+                    kind = (kinds[col_idx] if col_idx < len(kinds)
+                            else 'force')
+                    data[f'element_{name}'] = _conv(
+                        elems[:, col_idx],
+                        'moment' if kind == 'moment' else 'force')
 
         # Raw channels (air-on).  The channel dict also carries the
         # self-describing balance markers (balance_type, speed_value,
@@ -1586,6 +1782,12 @@ class TablePanel(QWidget):
         Raises ExportAborted when there is nothing to write; any other
         writer error propagates to the caller.
         """
+        with self._export_units(config):
+            self._write_export_in_units(filepath, format, config)
+
+    def _write_export_in_units(self, filepath: str, format: str,
+                               config: dict = None):
+        """_write_export's body, run inside _export_units."""
         import pandas as pd
 
         if format == 'excel':
@@ -1754,19 +1956,18 @@ class TablePanel(QWidget):
             scipy.io.savemat(filepath, mat_dict, long_field_names=False)
 
         elif format == 'csv':
-            # CSV - collect from the table widget
-            data = {col[1]: [] for col in self._columns}
-
-            for row in range(self.table.rowCount()):
-                for col, col_info in enumerate(self._columns):
-                    item = self.table.item(row, col)
-                    try:
-                        value = float(item.text())
-                    except ValueError:
-                        value = item.text()
-                    data[col_info[1]].append(value)
-
-            df = pd.DataFrame(data)
+            # CSV - the table's rows, in the export units and at full
+            # precision rather than the widget's rounded text
+            case_id = self.cmb_case.currentData()
+            if case_id is None:
+                cases = [c for c in self.model.cases if c.has_data]
+            else:
+                case = self.model.cases.get(case_id)
+                cases = [case] if case and case.has_data else []
+            rows = []
+            for case in cases:
+                rows.extend(self._get_case_rows(case))
+            df = pd.DataFrame(rows, columns=[c[1] for c in self._columns])
             df.to_csv(filepath, index=False)
 
         elif format == 'hdf5':
@@ -1795,7 +1996,7 @@ class TablePanel(QWidget):
             with h5py.File(filepath, 'w') as hf:
                 # Global metadata
                 hf.attrs['streamlined_version'] = __version__
-                hf.attrs['output_units'] = self.model.output_units
+                hf.attrs['output_units'] = self._output_units
                 hf.attrs['n_cases'] = len(cases_to_export)
 
                 # Global calibration group
@@ -1806,15 +2007,18 @@ class TablePanel(QWidget):
 
                 # Global geometry group
                 geo_grp = hf.create_group('geometry')
-                geo_grp.attrs['mac'] = self.model.mac
-                geo_grp.attrs['ref_area'] = self.model.ref_area
-                geo_grp.attrs['span'] = self.model.span
+                geo = self._geometry_out()
+                geo_grp.attrs['mac'] = geo['mac']
+                geo_grp.attrs['ref_area'] = geo['ref_area']
+                geo_grp.attrs['span'] = geo['span']
                 geo_grp.create_dataset('mrc',
-                                       data=np.array(self.model.mrc))
+                                       data=np.array(geo['mrc']))
+                geo_grp.attrs['length_unit'] = geo['length_unit']
+                geo_grp.attrs['area_unit'] = geo['area_unit']
                 geo_grp.attrs['alpha_offset_deg'] = self.model.alpha_offset
                 geo_grp.attrs['beta_offset_deg'] = self.model.beta_offset
                 geo_grp.attrs['input_units'] = self.model.units
-                geo_grp.attrs['output_units'] = self.model.output_units
+                geo_grp.attrs['output_units'] = self._output_units
 
                 for case in cases_to_export:
                     # Sanitize case name for HDF5 group
@@ -1858,12 +2062,20 @@ class TablePanel(QWidget):
                     # anything opening it sees each raw channel labelled
                     # with the calibration that converts it.
                     channel_cal = categorized.pop('Channel_Cal', None)
+                    # Units become a 'units' attribute on each dataset
+                    units_map = categorized.pop('Units', None) or {}
                     for cat_key, sub in categorized.items():
                         sub_grp = case_grp.create_group(cat_key)
+                        # Raw datasets carry freestream's cal_* attributes
+                        # instead, which already say what they are
+                        cat_units = ({} if cat_key == 'Raw'
+                                     else units_map.get(cat_key) or {})
                         for name, arr in sub.items():
                             try:
-                                sub_grp.create_dataset(
+                                ds = sub_grp.create_dataset(
                                     name, data=np.asarray(arr))
+                                if name in cat_units:
+                                    ds.attrs['units'] = cat_units[name]
                             except Exception:
                                 pass
                     if channel_cal and 'Raw' in case_grp:
